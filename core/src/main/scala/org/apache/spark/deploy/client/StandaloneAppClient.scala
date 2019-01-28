@@ -28,7 +28,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.{ApplicationDescription, ExecutorState}
 import org.apache.spark.deploy.DeployMessages._
-import org.apache.spark.deploy.master.Master
+import org.apache.spark.deploy.globalmaster.GlobalMaster
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
@@ -73,7 +73,7 @@ private[spark] class StandaloneAppClient(
     // action, this thread pool must be able to create "masterRpcAddresses.size" threads at the same
     // time so that we can register with all masters.
     private val registerMasterThreadPool = ThreadUtils.newDaemonCachedThreadPool(
-      "appclient-register-master-threadpool",
+      "appclient-register-global-master-threadpool",
       masterRpcAddresses.length // Make sure we can register with all masters at the same time
     )
 
@@ -103,7 +103,7 @@ private[spark] class StandaloneAppClient(
               return
             }
             logInfo("Connecting to master " + masterAddress.toSparkURL + "...")
-            val masterRef = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+            val masterRef = rpcEnv.setupEndpointRef(masterAddress, GlobalMaster.ENDPOINT_NAME)
             masterRef.send(RegisterApplication(appDescription, self))
           } catch {
             case ie: InterruptedException => // Cancelled
@@ -168,25 +168,20 @@ private[spark] class StandaloneAppClient(
         markDead("Master removed our application: %s".format(message))
         stop()
 
-      case ExecutorAdded(id: Int, workerId: String, hostPort: String, cores: Int, memory: Int) =>
+      case SiteDriverAdded(id: String, smId: String, hostPort: String, cores: Int, memory: Int) =>
         val fullId = appId + "/" + id
-        logInfo("Executor added: %s on %s (%s) with %d cores".format(fullId, workerId, hostPort,
-          cores))
-        listener.executorAdded(fullId, workerId, hostPort, cores, memory)
+        logInfo("SiteDriver added: %s on %s (%s) with %d cores".format(
+          fullId, smId, hostPort, cores
+        ))
 
-      case ExecutorUpdated(id, state, message, exitStatus, workerLost) =>
-        val fullId = appId + "/" + id
-        val messageText = message.map(s => " (" + s + ")").getOrElse("")
-        logInfo("Executor updated: %s is now %s%s".format(fullId, state, messageText))
-        if (ExecutorState.isFinished(state)) {
-          listener.executorRemoved(fullId, message.getOrElse(""), exitStatus, workerLost)
-        }
+        // TODO-lzp: wait to fill code
+      case SiteDriverUpdated =>
 
-      case MasterChanged(masterRef, masterWebUiUrl) =>
-        logInfo("Master has changed, new master is at " + masterRef.address.toSparkURL)
-        master = Some(masterRef)
+      case GlobalMasterChanged(gmRef, gmWebUiUrl) =>
+        logInfo("Global Master has changed, new master is at " + gmRef.address.toSparkURL)
+        master = Some(gmRef)
         alreadyDisconnected = false
-        masterRef.send(MasterChangeAcknowledged(appId.get))
+        gmRef.send(GlobalMasterChangeAcknowledged(appId.get))
     }
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {

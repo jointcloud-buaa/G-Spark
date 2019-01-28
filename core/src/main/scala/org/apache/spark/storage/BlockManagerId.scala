@@ -64,7 +64,7 @@ class BlockManagerId private (
   def topologyInfo: Option[String] = topologyInfo_
 
   def isDriver: Boolean = {
-    executorId == SparkContext.DRIVER_IDENTIFIER ||
+    executorId == SparkContext.GLOBAL_DRIVER_IDENTIFIER ||
       executorId == SparkContext.LEGACY_DRIVER_IDENTIFIER
   }
 

@@ -202,6 +202,7 @@ class SparkContext(config: SparkConf) extends Logging {
   private var _ui: Option[SparkUI] = None
   private var _hadoopConfiguration: Configuration = _
   private var _executorMemory: Int = _
+  private var _siteDriverMemory: Int = _
   private var _schedulerBackend: SchedulerBackend = _
   private var _taskScheduler: TaskScheduler = _
   private var _heartbeatReceiver: RpcEndpointRef = _
@@ -287,6 +288,8 @@ class SparkContext(config: SparkConf) extends Logging {
   def hadoopConfiguration: Configuration = _hadoopConfiguration
 
   private[spark] def executorMemory: Int = _executorMemory
+
+  private[spark] def siteDriverMemory: Int = _siteDriverMemory
 
   // Environment variables to pass to our executors.
   private[spark] val executorEnvs = HashMap[String, String]()
@@ -397,7 +400,7 @@ class SparkContext(config: SparkConf) extends Logging {
     _conf.set(DRIVER_HOST_ADDRESS, _conf.get(DRIVER_HOST_ADDRESS))
     _conf.setIfMissing("spark.driver.port", "0")
 
-    _conf.set("spark.executor.id", SparkContext.DRIVER_IDENTIFIER)
+    _conf.set("spark.executor.id", SparkContext.GLOBAL_DRIVER_IDENTIFIER)
 
     _jars = Utils.getUserJars(_conf)
     _files = _conf.getOption("spark.files").map(_.split(",")).map(_.filter(_.nonEmpty))
@@ -474,6 +477,13 @@ class SparkContext(config: SparkConf) extends Logging {
       .orElse(Option(System.getenv("SPARK_EXECUTOR_MEMORY")))
       .orElse(Option(System.getenv("SPARK_MEM"))
       .map(warnSparkMem))
+      .map(Utils.memoryStringToMb)
+      .getOrElse(1024)
+
+    _siteDriverMemory = _conf.getOption("spark.siteDriver.memory")
+      .orElse(Option(System.getenv("SPARK_SITE_DRIVER_MEMORY")))
+      .orElse(Option(System.getenv("SPARK_MEM")))
+      .map(warnSparkMem)
       .map(Utils.memoryStringToMb)
       .getOrElse(1024)
 
@@ -601,7 +611,7 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   private[spark] def getExecutorThreadDump(executorId: String): Option[Array[ThreadStackTrace]] = {
     try {
-      if (executorId == SparkContext.DRIVER_IDENTIFIER) {
+      if (executorId == SparkContext.GLOBAL_DRIVER_IDENTIFIER) {
         Some(Utils.getThreadDump())
       } else {
         val endpointRef = env.blockManager.master.getExecutorEndpointRef(executorId).get
@@ -2408,7 +2418,9 @@ object SparkContext extends Logging {
    * changed to `driver` because the angle brackets caused escaping issues in URLs and XML (see
    * SPARK-6716 for more details).
    */
-  private[spark] val DRIVER_IDENTIFIER = "driver"
+  private[spark] val GLOBAL_DRIVER_IDENTIFIER = "driver"
+
+  private[spark] val SITE_DRIVER_IDENTIFIER_PREFIX = "site-driver"
 
   /**
    * Legacy version of DRIVER_IDENTIFIER, retained for backwards-compatibility.

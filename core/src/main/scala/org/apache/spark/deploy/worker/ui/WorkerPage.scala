@@ -25,8 +25,7 @@ import org.json4s.JValue
 
 import org.apache.spark.deploy.DeployMessages.{RequestWorkerState, WorkerStateResponse}
 import org.apache.spark.deploy.JsonProtocol
-import org.apache.spark.deploy.master.DriverState
-import org.apache.spark.deploy.worker.{DriverRunner, ExecutorRunner}
+import org.apache.spark.deploy.worker.ExecutorRunner
 import org.apache.spark.ui.{UIUtils, WebUIPage}
 import org.apache.spark.util.Utils
 
@@ -48,12 +47,6 @@ private[ui] class WorkerPage(parent: WorkerWebUI) extends WebUIPage("") {
     val finishedExecutors = workerState.finishedExecutors
     val finishedExecutorTable =
       UIUtils.listingTable(executorHeaders, executorRow, finishedExecutors)
-
-    val driverHeaders = Seq("DriverID", "Main Class", "State", "Cores", "Memory", "Logs", "Notes")
-    val runningDrivers = workerState.drivers.sortBy(_.driverId).reverse
-    val runningDriverTable = UIUtils.listingTable(driverHeaders, driverRow, runningDrivers)
-    val finishedDrivers = workerState.finishedDrivers.sortBy(_.driverId).reverse
-    val finishedDriverTable = UIUtils.listingTable(driverHeaders, driverRow, finishedDrivers)
 
     // For now we only show driver information if the user has submitted drivers to the cluster.
     // This is until we integrate the notion of drivers and applications in the UI.
@@ -78,21 +71,9 @@ private[ui] class WorkerPage(parent: WorkerWebUI) extends WebUIPage("") {
           <h4> Running Executors ({runningExecutors.size}) </h4>
           {runningExecutorTable}
           {
-            if (runningDrivers.nonEmpty) {
-              <h4> Running Drivers ({runningDrivers.size}) </h4> ++
-              runningDriverTable
-            }
-          }
-          {
             if (finishedExecutors.nonEmpty) {
               <h4>Finished Executors ({finishedExecutors.size}) </h4> ++
               finishedExecutorTable
-            }
-          }
-          {
-            if (finishedDrivers.nonEmpty) {
-              <h4> Finished Drivers ({finishedDrivers.size}) </h4> ++
-              finishedDriverTable
             }
           }
         </div>
@@ -111,39 +92,18 @@ private[ui] class WorkerPage(parent: WorkerWebUI) extends WebUIPage("") {
       </td>
       <td>
         <ul class="unstyled">
-          <li><strong>ID:</strong> {executor.appId}</li>
+          <li><strong>ID:</strong> {executor.siteAppId}</li>
           <li><strong>Name:</strong> {executor.appDesc.name}</li>
           <li><strong>User:</strong> {executor.appDesc.user}</li>
         </ul>
       </td>
       <td>
      <a href={"logPage?appId=%s&executorId=%s&logType=stdout"
-        .format(executor.appId, executor.execId)}>stdout</a>
+        .format(executor.siteAppId, executor.execId)}>stdout</a>
      <a href={"logPage?appId=%s&executorId=%s&logType=stderr"
-        .format(executor.appId, executor.execId)}>stderr</a>
+        .format(executor.siteAppId, executor.execId)}>stderr</a>
       </td>
     </tr>
 
-  }
-
-  def driverRow(driver: DriverRunner): Seq[Node] = {
-    <tr>
-      <td>{driver.driverId}</td>
-      <td>{driver.driverDesc.command.arguments(2)}</td>
-      <td>{driver.finalState.getOrElse(DriverState.RUNNING)}</td>
-      <td sorttable_customkey={driver.driverDesc.cores.toString}>
-        {driver.driverDesc.cores.toString}
-      </td>
-      <td sorttable_customkey={driver.driverDesc.mem.toString}>
-        {Utils.megabytesToString(driver.driverDesc.mem)}
-      </td>
-      <td>
-        <a href={s"logPage?driverId=${driver.driverId}&logType=stdout"}>stdout</a>
-        <a href={s"logPage?driverId=${driver.driverId}&logType=stderr"}>stderr</a>
-      </td>
-      <td>
-        {driver.finalException.getOrElse("")}
-      </td>
-    </tr>
   }
 }

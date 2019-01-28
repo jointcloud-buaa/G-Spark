@@ -61,8 +61,8 @@ private[spark] class KillSubmissionResponse extends SubmitRestProtocolResponse {
 private[spark] class SubmissionStatusResponse extends SubmitRestProtocolResponse {
   var submissionId: String = null
   var driverState: String = null
-  var workerId: String = null
-  var workerHostPort: String = null
+  var siteMasterId: String = null
+  var siteMasterHostPort: String = null
 
   protected override def doValidate(): Unit = {
     super.doValidate()

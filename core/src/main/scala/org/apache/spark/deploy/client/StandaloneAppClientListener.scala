@@ -33,9 +33,9 @@ private[spark] trait StandaloneAppClientListener {
   /** An application death is an unrecoverable failure condition. */
   def dead(reason: String): Unit
 
-  def executorAdded(
-      fullId: String, workerId: String, hostPort: String, cores: Int, memory: Int): Unit
+  def siteDriverAdded(
+    fullId: String, smId: String, hostPort: String, cores: Int, memory: Int): Unit
 
-  def executorRemoved(
-      fullId: String, message: String, exitStatus: Option[Int], workerLost: Boolean): Unit
+  def siteDriverRemoved(
+    fullId: String, message: String, exitStatus: Option[Int], siteMasterLost: Boolean): Unit
 }

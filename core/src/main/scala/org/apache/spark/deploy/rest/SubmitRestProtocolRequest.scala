@@ -47,10 +47,10 @@ private[rest] class CreateSubmissionRequest extends SubmitRestProtocolRequest {
     assert(sparkProperties != null, "No Spark properties set!")
     assertFieldIsSet(appResource, "appResource")
     assertPropertyIsSet("spark.app.name")
-    assertPropertyIsBoolean("spark.driver.supervise")
-    assertPropertyIsNumeric("spark.driver.cores")
+    assertPropertyIsBoolean("spark.globalDriver.supervise")
+    assertPropertyIsNumeric("spark.globalDriver.cores")
     assertPropertyIsNumeric("spark.cores.max")
-    assertPropertyIsMemory("spark.driver.memory")
+    assertPropertyIsMemory("spark.globalDriver.memory")
     assertPropertyIsMemory("spark.executor.memory")
   }
 

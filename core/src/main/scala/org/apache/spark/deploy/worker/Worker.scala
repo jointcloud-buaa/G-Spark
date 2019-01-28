@@ -33,7 +33,7 @@ import org.apache.spark.{SecurityManager, SparkConf}
 import org.apache.spark.deploy.{Command, ExecutorDescription, ExecutorState}
 import org.apache.spark.deploy.DeployMessages._
 import org.apache.spark.deploy.ExternalShuffleService
-import org.apache.spark.deploy.master.{DriverState, Master}
+import org.apache.spark.deploy.sitemaster.SiteMaster
 import org.apache.spark.deploy.worker.ui.WorkerWebUI
 import org.apache.spark.internal.Logging
 import org.apache.spark.metrics.MetricsSystem
@@ -84,10 +84,10 @@ private[deploy] class Worker(
     val randomNumberGenerator = new Random(UUID.randomUUID.getMostSignificantBits)
     randomNumberGenerator.nextDouble + FUZZ_MULTIPLIER_INTERVAL_LOWER_BOUND
   }
-  private val INITIAL_REGISTRATION_RETRY_INTERVAL_SECONDS = (math.round(10 *
-    REGISTRATION_RETRY_FUZZ_MULTIPLIER))
-  private val PROLONGED_REGISTRATION_RETRY_INTERVAL_SECONDS = (math.round(60
-    * REGISTRATION_RETRY_FUZZ_MULTIPLIER))
+  private val INITIAL_REGISTRATION_RETRY_INTERVAL_SECONDS =
+    math.round(10 * REGISTRATION_RETRY_FUZZ_MULTIPLIER)
+  private val PROLONGED_REGISTRATION_RETRY_INTERVAL_SECONDS =
+    math.round(60 * REGISTRATION_RETRY_FUZZ_MULTIPLIER)
 
   private val CLEANUP_ENABLED = conf.getBoolean("spark.worker.cleanup.enabled", false)
   // How often worker will clean up old app folders
@@ -116,16 +116,12 @@ private[deploy] class Worker(
 
   var workDir: File = null
   val finishedExecutors = new LinkedHashMap[String, ExecutorRunner]
-  val drivers = new HashMap[String, DriverRunner]
   val executors = new HashMap[String, ExecutorRunner]
-  val finishedDrivers = new LinkedHashMap[String, DriverRunner]
   val appDirectories = new HashMap[String, Seq[String]]
   val finishedApps = new HashSet[String]
 
   val retainedExecutors = conf.getInt("spark.worker.ui.retainedExecutors",
     WorkerWebUI.DEFAULT_RETAINED_EXECUTORS)
-  val retainedDrivers = conf.getInt("spark.worker.ui.retainedDrivers",
-    WorkerWebUI.DEFAULT_RETAINED_DRIVERS)
 
   // The shuffle service is not actually started unless configured.
   private val shuffleService = new ExternalShuffleService(conf, securityMgr)
@@ -214,8 +210,8 @@ private[deploy] class Worker(
       registerMasterThreadPool.submit(new Runnable {
         override def run(): Unit = {
           try {
-            logInfo("Connecting to master " + masterAddress + "...")
-            val masterEndpoint = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+            logInfo("Connecting to site master " + masterAddress + "...")
+            val masterEndpoint = rpcEnv.setupEndpointRef(masterAddress, SiteMaster.ENDPOINT_NAME)
             registerWithMaster(masterEndpoint)
           } catch {
             case ie: InterruptedException => // Cancelled
@@ -271,7 +267,8 @@ private[deploy] class Worker(
               override def run(): Unit = {
                 try {
                   logInfo("Connecting to master " + masterAddress + "...")
-                  val masterEndpoint = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+                  val masterEndpoint = rpcEnv.setupEndpointRef(
+                    masterAddress, SiteMaster.ENDPOINT_NAME)
                   registerWithMaster(masterEndpoint)
                 } catch {
                   case ie: InterruptedException => // Cancelled
@@ -293,7 +290,7 @@ private[deploy] class Worker(
           registrationRetryTimer = Some(
             forwordMessageScheduler.scheduleAtFixedRate(new Runnable {
               override def run(): Unit = Utils.tryLogNonFatalError {
-                self.send(ReregisterWithMaster)
+                self.send(ReregisterWithSiteMaster)
               }
             }, PROLONGED_REGISTRATION_RETRY_INTERVAL_SECONDS,
               PROLONGED_REGISTRATION_RETRY_INTERVAL_SECONDS,
@@ -329,7 +326,7 @@ private[deploy] class Worker(
         registrationRetryTimer = Some(forwordMessageScheduler.scheduleAtFixedRate(
           new Runnable {
             override def run(): Unit = Utils.tryLogNonFatalError {
-              Option(self).foreach(_.send(ReregisterWithMaster))
+              Option(self).foreach(_.send(ReregisterWithSiteMaster))
             }
           },
           INITIAL_REGISTRATION_RETRY_INTERVAL_SECONDS,
@@ -361,7 +358,7 @@ private[deploy] class Worker(
       case RegisteredWorker(masterRef, masterWebUiUrl) =>
         logInfo("Successfully registered with master " + masterRef.address.toSparkURL)
         registered = true
-        changeMaster(masterRef, masterWebUiUrl)
+        changeMaster(masterRef, masterWebUiUrl)  // will cancel all register futures
         forwordMessageScheduler.scheduleAtFixedRate(new Runnable {
           override def run(): Unit = Utils.tryLogNonFatalError {
             self.send(SendHeartbeat)
@@ -378,9 +375,9 @@ private[deploy] class Worker(
         }
 
         val execs = executors.values.map { e =>
-          new ExecutorDescription(e.appId, e.execId, e.cores, e.state)
+          new ExecutorDescription(e.siteAppId, e.execId, e.cores, e.state)
         }
-        masterRef.send(WorkerLatestState(workerId, execs.toList, drivers.keys.toSeq))
+        masterRef.send(WorkerLatestState(workerId, execs.toList))
 
       case RegisterWorkerFailed(message) =>
         if (!registered) {
@@ -388,20 +385,20 @@ private[deploy] class Worker(
           System.exit(1)
         }
 
-      case MasterInStandby =>
+      case SiteMasterInStandby =>
         // Ignore. Master not yet ready.
     }
   }
 
   override def receive: PartialFunction[Any, Unit] = synchronized {
     case SendHeartbeat =>
-      if (connected) { sendToMaster(Heartbeat(workerId, self)) }
+      if (connected) { sendToMaster(WorkerHeartbeat(workerId, self)) }
 
     case WorkDirCleanup =>
       // Spin up a separate thread (in a future) to do the dir cleanup; don't tie up worker
       // rpcEndpoint.
       // Copy ids so that it can be used in the cleanup thread.
-      val appIds = executors.values.map(_.appId).toSet
+      val appIds = executors.values.map(_.siteAppId).toSet
       val cleanupFuture = concurrent.Future {
         val appDirs = workDir.listFiles()
         if (appDirs == null) {
@@ -425,13 +422,13 @@ private[deploy] class Worker(
           logError("App dir cleanup failed: " + e.getMessage, e)
       }(cleanupThreadExecutor)
 
-    case MasterChanged(masterRef, masterWebUiUrl) =>
+    case SiteMasterChanged(masterRef, masterWebUiUrl) =>
       logInfo("Master has changed, new master is at " + masterRef.address.toSparkURL)
       changeMaster(masterRef, masterWebUiUrl)
 
       val execs = executors.values.
-        map(e => new ExecutorDescription(e.appId, e.execId, e.cores, e.state))
-      masterRef.send(WorkerSchedulerStateResponse(workerId, execs.toList, drivers.keys.toSeq))
+        map(e => new ExecutorDescription(e.siteAppId, e.execId, e.cores, e.state))
+      masterRef.send(WorkerSchedulerStateResponse(workerId, execs.toList))
 
     case ReconnectWorker(masterUrl) =>
       logInfo(s"Master with url $masterUrl requested this worker to reconnect.")
@@ -463,7 +460,7 @@ private[deploy] class Worker(
           val manager = new ExecutorRunner(
             appId,
             execId,
-            appDesc.copy(command = Worker.maybeUpdateSSLSettings(appDesc.command, conf)),
+            appDesc.copy(command = Utils.maybeUpdateSSLSettings(appDesc.command, conf)),
             cores_,
             memory_,
             self,
@@ -510,38 +507,10 @@ private[deploy] class Worker(
         }
       }
 
-    case LaunchDriver(driverId, driverDesc) =>
-      logInfo(s"Asked to launch driver $driverId")
-      val driver = new DriverRunner(
-        conf,
-        driverId,
-        workDir,
-        sparkHome,
-        driverDesc.copy(command = Worker.maybeUpdateSSLSettings(driverDesc.command, conf)),
-        self,
-        workerUri,
-        securityMgr)
-      drivers(driverId) = driver
-      driver.start()
-
-      coresUsed += driverDesc.cores
-      memoryUsed += driverDesc.mem
-
-    case KillDriver(driverId) =>
-      logInfo(s"Asked to kill driver $driverId")
-      drivers.get(driverId) match {
-        case Some(runner) =>
-          runner.kill()
-        case None =>
-          logError(s"Asked to kill unknown driver $driverId")
-      }
-
-    case driverStateChanged @ DriverStateChanged(driverId, state, exception) =>
-      handleDriverStateChanged(driverStateChanged)
-
-    case ReregisterWithMaster =>
+    case ReregisterWithSiteMaster =>
       reregisterWithMaster()
 
+      // TODO-lzp: may delete
     case ApplicationFinished(id) =>
       finishedApps += id
       maybeCleanupApplication(id)
@@ -550,8 +519,7 @@ private[deploy] class Worker(
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case RequestWorkerState =>
       context.reply(WorkerStateResponse(host, port, workerId, executors.values.toList,
-        finishedExecutors.values.toList, drivers.values.toList,
-        finishedDrivers.values.toList, activeMasterUrl, cores, memory,
+        finishedExecutors.values.toList, activeMasterUrl, cores, memory,
         coresUsed, memoryUsed, activeMasterWebUiUrl))
   }
 
@@ -569,7 +537,7 @@ private[deploy] class Worker(
   }
 
   private def maybeCleanupApplication(id: String): Unit = {
-    val shouldCleanup = finishedApps.contains(id) && !executors.values.exists(_.appId == id)
+    val shouldCleanup = finishedApps.contains(id) && !executors.values.exists(_.siteAppId == id)
     if (shouldCleanup) {
       finishedApps -= id
       appDirectories.remove(id).foreach { dirList =>
@@ -606,7 +574,6 @@ private[deploy] class Worker(
     forwordMessageScheduler.shutdownNow()
     registerMasterThreadPool.shutdownNow()
     executors.values.foreach(_.kill())
-    drivers.values.foreach(_.kill())
     shuffleService.stop()
     webUi.stop()
     metricsSystem.stop()
@@ -620,40 +587,6 @@ private[deploy] class Worker(
         case (executorId, _) => finishedExecutors.remove(executorId)
       }
     }
-  }
-
-  private def trimFinishedDriversIfNecessary(): Unit = {
-    // do not need to protect with locks since both WorkerPage and Restful server get data through
-    // thread-safe RpcEndPoint
-    if (finishedDrivers.size > retainedDrivers) {
-      finishedDrivers.take(math.max(finishedDrivers.size / 10, 1)).foreach {
-        case (driverId, _) => finishedDrivers.remove(driverId)
-      }
-    }
-  }
-
-  private[worker] def handleDriverStateChanged(driverStateChanged: DriverStateChanged): Unit = {
-    val driverId = driverStateChanged.driverId
-    val exception = driverStateChanged.exception
-    val state = driverStateChanged.state
-    state match {
-      case DriverState.ERROR =>
-        logWarning(s"Driver $driverId failed with unrecoverable exception: ${exception.get}")
-      case DriverState.FAILED =>
-        logWarning(s"Driver $driverId exited with failure")
-      case DriverState.FINISHED =>
-        logInfo(s"Driver $driverId exited successfully")
-      case DriverState.KILLED =>
-        logInfo(s"Driver $driverId was killed by user")
-      case _ =>
-        logDebug(s"Driver $driverId changed state to $state")
-    }
-    sendToMaster(driverStateChanged)
-    val driver = drivers.remove(driverId).get
-    finishedDrivers(driverId) = driver
-    trimFinishedDriversIfNecessary()
-    memoryUsed -= driver.driverDesc.mem
-    coresUsed -= driver.driverDesc.cores
   }
 
   private[worker] def handleExecutorStateChanged(executorStateChanged: ExecutorStateChanged):
@@ -714,30 +647,9 @@ private[deploy] object Worker extends Logging {
     val securityMgr = new SecurityManager(conf)
     val rpcEnv = RpcEnv.create(systemName, host, port, conf, securityMgr)
     val masterAddresses = masterUrls.map(RpcAddress.fromSparkURL(_))
+    logInfo("#lzp#: startRpcEnvAndEndpoint: " + rpcEnv.address)
     rpcEnv.setupEndpoint(ENDPOINT_NAME, new Worker(rpcEnv, webUiPort, cores, memory,
       masterAddresses, ENDPOINT_NAME, workDir, conf, securityMgr))
     rpcEnv
-  }
-
-  def isUseLocalNodeSSLConfig(cmd: Command): Boolean = {
-    val pattern = """\-Dspark\.ssl\.useNodeLocalConf\=(.+)""".r
-    val result = cmd.javaOpts.collectFirst {
-      case pattern(_result) => _result.toBoolean
-    }
-    result.getOrElse(false)
-  }
-
-  def maybeUpdateSSLSettings(cmd: Command, conf: SparkConf): Command = {
-    val prefix = "spark.ssl."
-    val useNLC = "spark.ssl.useNodeLocalConf"
-    if (isUseLocalNodeSSLConfig(cmd)) {
-      val newJavaOpts = cmd.javaOpts
-          .filter(opt => !opt.startsWith(s"-D$prefix")) ++
-          conf.getAll.collect { case (key, value) if key.startsWith(prefix) => s"-D$key=$value" } :+
-          s"-D$useNLC=true"
-      cmd.copy(javaOpts = newJavaOpts)
-    } else {
-      cmd
-    }
   }
 }

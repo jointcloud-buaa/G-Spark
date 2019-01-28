@@ -53,7 +53,7 @@ private[spark] class LocalEndpoint(
 
   private var freeCores = totalCores
 
-  val localExecutorId = SparkContext.DRIVER_IDENTIFIER
+  val localExecutorId = SparkContext.GLOBAL_DRIVER_IDENTIFIER
   val localExecutorHostname = "localhost"
 
   private val executor = new Executor(

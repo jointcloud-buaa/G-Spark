@@ -25,9 +25,28 @@ private[spark] object RpcUtils {
   /**
    * Retrieve a `RpcEndpointRef` which is located in the driver via its name.
    */
+  // TODO-lzp: need to delete
   def makeDriverRef(name: String, conf: SparkConf, rpcEnv: RpcEnv): RpcEndpointRef = {
     val driverHost: String = conf.get("spark.driver.host", "localhost")
     val driverPort: Int = conf.getInt("spark.driver.port", 7077)
+    Utils.checkHost(driverHost, "Expected hostname")
+    rpcEnv.setupEndpointRef(RpcAddress(driverHost, driverPort), name)
+  }
+
+  // 更通用的构造Ref
+  def makeRef(name: String, host: String, port: Int, rpcEnv: RpcEnv): RpcEndpointRef =
+    rpcEnv.setupEndpointRef(RpcAddress(host, port), name)
+
+  def makeGlobalDriverRef(name: String, conf: SparkConf, rpcEnv: RpcEnv): RpcEndpointRef = {
+    val driverHost: String = conf.get("spark.GlobalDriver.host", "localhost")
+    val driverPort: Int = conf.getInt("spark.GlobalDriver.port", 7077)
+    Utils.checkHost(driverHost, "Expected hostname")
+    rpcEnv.setupEndpointRef(RpcAddress(driverHost, driverPort), name)
+  }
+
+  def makeSiteDriverRef(name: String, conf: SparkConf, rpcEnv: RpcEnv): RpcEndpointRef = {
+    val driverHost: String = conf.get("spark.siteDriver.host", "localhost")
+    val driverPort: Int = conf.getInt("spark.siteDriver.port", 7077)
     Utils.checkHost(driverHost, "Expected hostname")
     rpcEnv.setupEndpointRef(RpcAddress(driverHost, driverPort), name)
   }

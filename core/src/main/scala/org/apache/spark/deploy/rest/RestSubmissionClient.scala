@@ -344,8 +344,8 @@ private[spark] class RestSubmissionClient(master: String) extends Logging {
       }
       if (statusResponse.success) {
         val driverState = Option(statusResponse.driverState)
-        val workerId = Option(statusResponse.workerId)
-        val workerHostPort = Option(statusResponse.workerHostPort)
+        val siteMasterId = Option(statusResponse.siteMasterId)
+        val siteMasterHostPort = Option(statusResponse.siteMasterHostPort)
         val exception = Option(statusResponse.message)
         // Log driver state, if present
         driverState match {
@@ -353,7 +353,7 @@ private[spark] class RestSubmissionClient(master: String) extends Logging {
           case _ => logError(s"State of driver $submissionId was not found!")
         }
         // Log worker node, if present
-        (workerId, workerHostPort) match {
+        (siteMasterId, siteMasterHostPort) match {
           case (Some(id), Some(hp)) => logInfo(s"Driver is running on worker $id at $hp.")
           case _ =>
         }

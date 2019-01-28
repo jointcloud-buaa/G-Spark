@@ -44,14 +44,14 @@ class WorkerWebUI(
 
   /** Initialize all components of the server. */
   def initialize() {
-    val logPage = new LogPage(this)
-    attachPage(logPage)
-    attachPage(new WorkerPage(this))
+//    val logPage = new LogPage(this)
+//    attachPage(logPage)
+//    attachPage(new WorkerPage(this))
     attachHandler(createStaticHandler(WorkerWebUI.STATIC_RESOURCE_BASE, "/static"))
-    attachHandler(createServletHandler("/log",
-      (request: HttpServletRequest) => logPage.renderLog(request),
-      worker.securityMgr,
-      worker.conf))
+//    attachHandler(createServletHandler("/log",
+//      (request: HttpServletRequest) => logPage.renderLog(request),
+//      worker.securityMgr,
+//      worker.conf))
   }
 }
 

@@ -197,9 +197,15 @@ package object config {
     .intConf
     .createWithDefault(0)
 
-  private[spark] val DRIVER_BLOCK_MANAGER_PORT = ConfigBuilder("spark.driver.blockManager.port")
-    .doc("Port to use for the block manager on the driver.")
-    .fallbackConf(BLOCK_MANAGER_PORT)
+  private[spark] val GLOBAL_DRIVER_BLOCK_MANAGER_PORT =
+    ConfigBuilder("spark.globalDriver.blockManager.port")
+      .doc("Port to use for the block manager on the driver.")
+      .fallbackConf(BLOCK_MANAGER_PORT)
+
+  private[spark] val SITE_DRIVER_BLOCK_MANAGER_PORT =
+    ConfigBuilder("spark.siteDriver.blockManager.port")
+      .doc("Port to use for the block manager on the site driver")
+      .fallbackConf(BLOCK_MANAGER_PORT)
 
   private[spark] val IGNORE_CORRUPT_FILES = ConfigBuilder("spark.files.ignoreCorruptFiles")
     .doc("Whether to ignore corrupt files. If true, the Spark jobs will continue to run when " +

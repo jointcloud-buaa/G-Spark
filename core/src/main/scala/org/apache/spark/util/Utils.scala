@@ -57,7 +57,7 @@ import org.json4s._
 import org.slf4j.Logger
 
 import org.apache.spark._
-import org.apache.spark.deploy.SparkHadoopUtil
+import org.apache.spark.deploy.{Command, SparkHadoopUtil}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
 import org.apache.spark.network.util.JavaUtils
@@ -2611,6 +2611,60 @@ private[spark] object Utils extends Logging {
     val secretBytes = new Array[Byte](bits / JByte.SIZE)
     rnd.nextBytes(secretBytes)
     HashCodes.fromBytes(secretBytes).toString()
+  }
+
+  def isUseLocalNodeSSLConfig(cmd: Command): Boolean = {
+    val pattern = """\-Dspark\.ssl\.useNodeLocalConf\=(.+)""".r
+    val result = cmd.javaOpts.collectFirst {
+                                             case pattern(_result) => _result.toBoolean
+                                           }
+    result.getOrElse(false)
+  }
+
+  def maybeUpdateSSLSettings(cmd: Command, conf: SparkConf): Command = {
+    val prefix = "spark.ssl."
+    val useNLC = "spark.ssl.useNodeLocalConf"
+    if (isUseLocalNodeSSLConfig(cmd)) {
+      val newJavaOpts = cmd.javaOpts
+        .filter(opt => !opt.startsWith(s"-D$prefix")) ++
+        conf.getAll.collect { case (key, value) if key.startsWith(prefix) => s"-D$key=$value" } :+
+        s"-D$useNLC=true"
+      cmd.copy(javaOpts = newJavaOpts)
+    } else {
+      cmd
+    }
+  }
+
+  // for use in SiteMasterArguments and WorkerArguments
+  def inferDefaultCores(): Int = {
+    Runtime.getRuntime.availableProcessors()
+  }
+
+  def inferDefaultMemory(): Int = {
+    val ibmVendor = System.getProperty("java.vendor").contains("IBM")
+    var totalMb = 0
+    try {
+      // scalastyle:off classforname
+      val bean = ManagementFactory.getOperatingSystemMXBean()
+      if (ibmVendor) {
+        val beanClass = Class.forName("com.ibm.lang.management.OperatingSystemMXBean")
+        val method = beanClass.getDeclaredMethod("getTotalPhysicalMemory")
+        totalMb = (method.invoke(bean).asInstanceOf[Long] / 1024 / 1024).toInt
+      } else {
+        val beanClass = Class.forName("com.sun.management.OperatingSystemMXBean")
+        val method = beanClass.getDeclaredMethod("getTotalPhysicalMemorySize")
+        totalMb = (method.invoke(bean).asInstanceOf[Long] / 1024 / 1024).toInt
+      }
+      // scalastyle:on classforname
+    } catch {
+      case e: Exception =>
+        totalMb = 2*1024
+        // scalastyle:off println
+        System.out.println("Failed to get total physical memory. Using " + totalMb + " MB")
+      // scalastyle:on println
+    }
+    // Leave out 1 GB for the operating system, but don't return a negative memory size
+    math.max(totalMb - 1024, Utils.DEFAULT_DRIVER_MEM_MB)
   }
 
 }

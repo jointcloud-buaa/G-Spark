@@ -20,7 +20,7 @@ package org.apache.spark.deploy.worker
 import java.io.File
 
 import org.apache.spark.{SecurityManager, SparkConf, SparkFunSuite}
-import org.apache.spark.deploy.{ApplicationDescription, Command, ExecutorState}
+import org.apache.spark.deploy.{ApplicationDescription, Command, CommandUtils, ExecutorState}
 
 class ExecutorRunnerTest extends SparkFunSuite {
   test("command includes appId") {

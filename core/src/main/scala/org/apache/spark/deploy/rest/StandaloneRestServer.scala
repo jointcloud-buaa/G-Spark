@@ -21,7 +21,7 @@ import java.io.File
 import javax.servlet.http.HttpServletResponse
 
 import org.apache.spark.{SPARK_VERSION => sparkVersion, SparkConf}
-import org.apache.spark.deploy.{Command, DeployMessages, DriverDescription}
+import org.apache.spark.deploy.{Command, DeployMessages, GlobalDriverDescription}
 import org.apache.spark.deploy.ClientArguments._
 import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.util.Utils
@@ -71,7 +71,7 @@ private[rest] class StandaloneKillRequestServlet(masterEndpoint: RpcEndpointRef,
   extends KillRequestServlet {
 
   protected def handleKill(submissionId: String): KillSubmissionResponse = {
-    val response = masterEndpoint.askWithRetry[DeployMessages.KillDriverResponse](
+    val response = masterEndpoint.askWithRetry[DeployMessages.KillGlobalDriverResponse](
       DeployMessages.RequestKillDriver(submissionId))
     val k = new KillSubmissionResponse
     k.serverSparkVersion = sparkVersion
@@ -89,7 +89,7 @@ private[rest] class StandaloneStatusRequestServlet(masterEndpoint: RpcEndpointRe
   extends StatusRequestServlet {
 
   protected def handleStatus(submissionId: String): SubmissionStatusResponse = {
-    val response = masterEndpoint.askWithRetry[DeployMessages.DriverStatusResponse](
+    val response = masterEndpoint.askWithRetry[DeployMessages.GlobalDriverStatusResponse](
       DeployMessages.RequestDriverStatus(submissionId))
     val message = response.exception.map { s"Exception from the cluster:\n" + formatException(_) }
     val d = new SubmissionStatusResponse
@@ -97,8 +97,8 @@ private[rest] class StandaloneStatusRequestServlet(masterEndpoint: RpcEndpointRe
     d.submissionId = submissionId
     d.success = response.found
     d.driverState = response.state.map(_.toString).orNull
-    d.workerId = response.workerId.orNull
-    d.workerHostPort = response.workerHostPort.orNull
+    d.siteMasterId = response.siteMasterId.orNull
+    d.siteMasterHostPort = response.siteMasterHostPort.orNull
     d.message = message.orNull
     d
   }
@@ -121,7 +121,7 @@ private[rest] class StandaloneSubmitRequestServlet(
    * fields used by python applications since python is not supported in standalone
    * cluster mode yet.
    */
-  private def buildDriverDescription(request: CreateSubmissionRequest): DriverDescription = {
+  private def buildDriverDescription(request: CreateSubmissionRequest): GlobalDriverDescription = {
     // Required fields, including the main class because python is not yet supported
     val appResource = Option(request.appResource).getOrElse {
       throw new SubmitRestMissingFieldException("Application jar is missing.")
@@ -132,12 +132,12 @@ private[rest] class StandaloneSubmitRequestServlet(
 
     // Optional fields
     val sparkProperties = request.sparkProperties
-    val driverMemory = sparkProperties.get("spark.driver.memory")
-    val driverCores = sparkProperties.get("spark.driver.cores")
-    val driverExtraJavaOptions = sparkProperties.get("spark.driver.extraJavaOptions")
-    val driverExtraClassPath = sparkProperties.get("spark.driver.extraClassPath")
-    val driverExtraLibraryPath = sparkProperties.get("spark.driver.extraLibraryPath")
-    val superviseDriver = sparkProperties.get("spark.driver.supervise")
+    val driverMemory = sparkProperties.get("spark.globalDriver.memory")
+    val driverCores = sparkProperties.get("spark.globalDriver.cores")
+    val driverExtraJavaOptions = sparkProperties.get("spark.globalDriver.extraJavaOptions")
+    val driverExtraClassPath = sparkProperties.get("spark.globalDriver.extraClassPath")
+    val driverExtraLibraryPath = sparkProperties.get("spark.globalDriver.extraLibraryPath")
+    val superviseDriver = sparkProperties.get("spark.globalDriver.supervise")
     val appArgs = request.appArgs
     val environmentVariables = request.environmentVariables
 
@@ -151,13 +151,13 @@ private[rest] class StandaloneSubmitRequestServlet(
     val sparkJavaOpts = Utils.sparkJavaOpts(conf)
     val javaOpts = sparkJavaOpts ++ extraJavaOpts
     val command = new Command(
-      "org.apache.spark.deploy.worker.DriverWrapper",
-      Seq("{{WORKER_URL}}", "{{USER_JAR}}", mainClass) ++ appArgs, // args to the DriverWrapper
+      "org.apache.spark.deploy.sitemaster.GlobalDriverWrapper",
+      Seq("{{SITE_MASTER_URL}}", "{{USER_JAR}}", mainClass) ++ appArgs, // args to the DriverWrapper
       environmentVariables, extraClassPath, extraLibraryPath, javaOpts)
     val actualDriverMemory = driverMemory.map(Utils.memoryStringToMb).getOrElse(DEFAULT_MEMORY)
     val actualDriverCores = driverCores.map(_.toInt).getOrElse(DEFAULT_CORES)
     val actualSuperviseDriver = superviseDriver.map(_.toBoolean).getOrElse(DEFAULT_SUPERVISE)
-    new DriverDescription(
+    new GlobalDriverDescription(
       appResource, actualDriverMemory, actualDriverCores, actualSuperviseDriver, command)
   }
 
@@ -174,13 +174,13 @@ private[rest] class StandaloneSubmitRequestServlet(
     requestMessage match {
       case submitRequest: CreateSubmissionRequest =>
         val driverDescription = buildDriverDescription(submitRequest)
-        val response = masterEndpoint.askWithRetry[DeployMessages.SubmitDriverResponse](
-          DeployMessages.RequestSubmitDriver(driverDescription))
+        val response = masterEndpoint.askWithRetry[DeployMessages.SubmitGlobalDriverResponse](
+          DeployMessages.RequestSubmitGlobalDriver(driverDescription))
         val submitResponse = new CreateSubmissionResponse
         submitResponse.serverSparkVersion = sparkVersion
         submitResponse.message = response.message
         submitResponse.success = response.success
-        submitResponse.submissionId = response.driverId.orNull
+        submitResponse.submissionId = response.gdriverId.orNull
         val unknownFields = findUnknownFields(requestMessageJson, requestMessage)
         if (unknownFields.nonEmpty) {
           // If there are fields that the server does not know about, warn the client

@@ -17,12 +17,10 @@
 
 package org.apache.spark.deploy.worker
 
-import java.lang.management.ManagementFactory
-
 import scala.annotation.tailrec
 
-import org.apache.spark.util.{IntParam, MemoryParam, Utils}
 import org.apache.spark.SparkConf
+import org.apache.spark.util.{IntParam, MemoryParam, Utils}
 
 /**
  * Command-line parser for the worker.
@@ -31,8 +29,8 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
   var host = Utils.localHostName()
   var port = 0
   var webUiPort = 8081
-  var cores = inferDefaultCores()
-  var memory = inferDefaultMemory()
+  var cores = Utils.inferDefaultCores()
+  var memory = Utils.inferDefaultMemory()
   var masters: Array[String] = null
   var workDir: String = null
   var propertiesFile: String = null
@@ -97,11 +95,11 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
       webUiPort = value
       parse(tail)
 
-    case ("--properties-file") :: value :: tail =>
+    case "--properties-file" :: value :: tail =>
       propertiesFile = value
       parse(tail)
 
-    case ("--help") :: tail =>
+    case "--help" :: tail =>
       printUsageAndExit(0)
 
     case value :: tail =>
@@ -142,37 +140,6 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
       "                           Default is conf/spark-defaults.conf.")
     // scalastyle:on println
     System.exit(exitCode)
-  }
-
-  def inferDefaultCores(): Int = {
-    Runtime.getRuntime.availableProcessors()
-  }
-
-  def inferDefaultMemory(): Int = {
-    val ibmVendor = System.getProperty("java.vendor").contains("IBM")
-    var totalMb = 0
-    try {
-      // scalastyle:off classforname
-      val bean = ManagementFactory.getOperatingSystemMXBean()
-      if (ibmVendor) {
-        val beanClass = Class.forName("com.ibm.lang.management.OperatingSystemMXBean")
-        val method = beanClass.getDeclaredMethod("getTotalPhysicalMemory")
-        totalMb = (method.invoke(bean).asInstanceOf[Long] / 1024 / 1024).toInt
-      } else {
-        val beanClass = Class.forName("com.sun.management.OperatingSystemMXBean")
-        val method = beanClass.getDeclaredMethod("getTotalPhysicalMemorySize")
-        totalMb = (method.invoke(bean).asInstanceOf[Long] / 1024 / 1024).toInt
-      }
-      // scalastyle:on classforname
-    } catch {
-      case e: Exception =>
-        totalMb = 2*1024
-        // scalastyle:off println
-        System.out.println("Failed to get total physical memory. Using " + totalMb + " MB")
-        // scalastyle:on println
-    }
-    // Leave out 1 GB for the operating system, but don't return a negative memory size
-    math.max(totalMb - 1024, Utils.DEFAULT_DRIVER_MEM_MB)
   }
 
   def checkWorkerMemory(): Unit = {

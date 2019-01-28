@@ -25,7 +25,7 @@ import scala.collection.JavaConverters._
 import com.google.common.io.Files
 
 import org.apache.spark.{SecurityManager, SparkConf}
-import org.apache.spark.deploy.{ApplicationDescription, ExecutorState}
+import org.apache.spark.deploy.{ApplicationDescription, CommandUtils, ExecutorState}
 import org.apache.spark.deploy.DeployMessages.ExecutorStateChanged
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.RpcEndpointRef
@@ -37,7 +37,7 @@ import org.apache.spark.util.logging.FileAppender
  * This is currently only used in standalone mode.
  */
 private[deploy] class ExecutorRunner(
-    val appId: String,
+    val siteAppId: String,
     val execId: Int,
     val appDesc: ApplicationDescription,
     val cores: Int,
@@ -55,7 +55,7 @@ private[deploy] class ExecutorRunner(
     @volatile var state: ExecutorState.Value)
   extends Logging {
 
-  private val fullId = appId + "/" + execId
+  private val fullId = siteAppId + "/" + execId
   private var workerThread: Thread = null
   private var process: Process = null
   private var stdoutAppender: FileAppender = null
@@ -105,7 +105,7 @@ private[deploy] class ExecutorRunner(
       }
     }
     try {
-      worker.send(ExecutorStateChanged(appId, execId, state, message, exitCode))
+      worker.send(ExecutorStateChanged(siteAppId, execId, state, message, exitCode))
     } catch {
       case e: IllegalStateException => logWarning(e.getMessage(), e)
     }
@@ -132,7 +132,7 @@ private[deploy] class ExecutorRunner(
     case "{{EXECUTOR_ID}}" => execId.toString
     case "{{HOSTNAME}}" => host
     case "{{CORES}}" => cores.toString
-    case "{{APP_ID}}" => appId
+    case "{{SITE_APP_ID}}" => siteAppId
     case other => other
   }
 
@@ -157,9 +157,9 @@ private[deploy] class ExecutorRunner(
       // Add webUI log urls
       val baseUrl =
         if (conf.getBoolean("spark.ui.reverseProxy", false)) {
-          s"/proxy/$workerId/logPage/?appId=$appId&executorId=$execId&logType="
+          s"/proxy/$workerId/logPage/?appId=$siteAppId&executorId=$execId&logType="
         } else {
-          s"http://$publicAddress:$webUiPort/logPage/?appId=$appId&executorId=$execId&logType="
+          s"http://$publicAddress:$webUiPort/logPage/?appId=$siteAppId&executorId=$execId&logType="
         }
       builder.environment.put("SPARK_LOG_URL_STDERR", s"${baseUrl}stderr")
       builder.environment.put("SPARK_LOG_URL_STDOUT", s"${baseUrl}stdout")
@@ -181,7 +181,7 @@ private[deploy] class ExecutorRunner(
       val exitCode = process.waitFor()
       state = ExecutorState.EXITED
       val message = "Command exited with code " + exitCode
-      worker.send(ExecutorStateChanged(appId, execId, state, Some(message), Some(exitCode)))
+      worker.send(ExecutorStateChanged(siteAppId, execId, state, Some(message), Some(exitCode)))
     } catch {
       case interrupted: InterruptedException =>
         logInfo("Runner thread for executor " + fullId + " interrupted")

@@ -104,7 +104,7 @@ class ExecutorsListener(storageStatusListener: StorageStatusListener, conf: Spar
     applicationStart.driverLogs.foreach { logs =>
       val storageStatus = activeStorageStatusList.find { s =>
         s.blockManagerId.executorId == SparkContext.LEGACY_DRIVER_IDENTIFIER ||
-        s.blockManagerId.executorId == SparkContext.DRIVER_IDENTIFIER
+        s.blockManagerId.executorId == SparkContext.GLOBAL_DRIVER_IDENTIFIER
       }
       storageStatus.foreach { s =>
         val eid = s.blockManagerId.executorId

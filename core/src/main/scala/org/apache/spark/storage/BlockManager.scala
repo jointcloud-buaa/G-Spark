@@ -81,7 +81,7 @@ private[spark] class BlockManager(
   val diskBlockManager = {
     // Only perform cleanup if an external service is not serving our shuffle files.
     val deleteFilesOnStop =
-      !externalShuffleServiceEnabled || executorId == SparkContext.DRIVER_IDENTIFIER
+      !externalShuffleServiceEnabled || executorId == SparkContext.GLOBAL_DRIVER_IDENTIFIER
     new DiskBlockManager(conf, deleteFilesOnStop)
   }
 

@@ -20,7 +20,7 @@ package org.apache.spark.deploy
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.SparkConf
-import org.apache.spark.deploy.master.Master
+import org.apache.spark.deploy.globalmaster.GlobalMaster
 import org.apache.spark.deploy.worker.Worker
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.RpcEnv
@@ -55,7 +55,7 @@ class LocalSparkCluster(
       .set("spark.shuffle.service.enabled", "false")
 
     /* Start the Master */
-    val (rpcEnv, webUiPort, _) = Master.startRpcEnvAndEndpoint(localHostname, 0, 0, _conf)
+    val (rpcEnv, webUiPort, _) = GlobalMaster.startRpcEnvAndEndpoint(localHostname, 0, 0, _conf)
     masterWebUIPort = webUiPort
     masterRpcEnvs += rpcEnv
     val masterUrl = "spark://" + Utils.localHostNameForURI() + ":" + rpcEnv.address.port

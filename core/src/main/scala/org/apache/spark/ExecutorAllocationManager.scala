@@ -702,7 +702,7 @@ private[spark] class ExecutorAllocationManager(
 
     override def onExecutorAdded(executorAdded: SparkListenerExecutorAdded): Unit = {
       val executorId = executorAdded.executorId
-      if (executorId != SparkContext.DRIVER_IDENTIFIER) {
+      if (executorId != SparkContext.GLOBAL_DRIVER_IDENTIFIER) {
         // This guards against the race condition in which the `SparkListenerTaskStart`
         // event is posted before the `SparkListenerBlockManagerAdded` event, which is
         // possible because these events are posted in different threads. (see SPARK-4951)

@@ -33,7 +33,7 @@ import org.json4s._
 import org.json4s.jackson.JsonMethods
 
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.deploy.master.RecoveryState
+import org.apache.spark.deploy.globalmaster.GlobalMasterState
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.{ThreadUtils, Utils}
 
@@ -226,7 +226,7 @@ private object FaultToleranceTest extends App with Logging {
   }
 
   private def getLeader: TestMasterInfo = {
-    val leaders = masters.filter(_.state == RecoveryState.ALIVE)
+    val leaders = masters.filter(_.state == GlobalMasterState.ALIVE)
     assertTrue(leaders.size == 1)
     leaders(0)
   }
@@ -298,10 +298,10 @@ private object FaultToleranceTest extends App with Logging {
 
           for (master <- masters) {
             master.state match {
-              case RecoveryState.ALIVE =>
+              case GlobalMasterState.ALIVE =>
                 numAlive += 1
                 liveWorkerIPs = master.liveWorkerIPs
-              case RecoveryState.STANDBY =>
+              case GlobalMasterState.STANDBY =>
                 numStandby += 1
               case _ => // ignore
             }
@@ -342,7 +342,7 @@ private class TestMasterInfo(val ip: String, val dockerId: DockerId, val logFile
   extends Logging  {
 
   implicit val formats = org.json4s.DefaultFormats
-  var state: RecoveryState.Value = _
+  var state: GlobalMasterState.Value = _
   var liveWorkerIPs: List[String] = _
   var numLiveApps = 0
 
@@ -366,7 +366,7 @@ private class TestMasterInfo(val ip: String, val dockerId: DockerId, val logFile
 
       val status = json \\ "status"
       val stateString = status.extract[String]
-      state = RecoveryState.values.filter(state => state.toString == stateString).head
+      state = GlobalMasterState.values.filter(state => state.toString == stateString).head
     } catch {
       case e: Exception =>
         // ignore, no state update

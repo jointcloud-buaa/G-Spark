@@ -21,7 +21,7 @@ import java.nio.ByteBuffer
 
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.rpc.RpcEndpointRef
-import org.apache.spark.scheduler.ExecutorLossReason
+import org.apache.spark.scheduler.{ExecutorLossReason, SiteDriverLossReason}
 import org.apache.spark.util.SerializableBuffer
 
 private[spark] sealed trait CoarseGrainedClusterMessage extends Serializable
@@ -49,6 +49,14 @@ private[spark] object CoarseGrainedClusterMessages {
 
   case class RegisterExecutorFailed(message: String) extends CoarseGrainedClusterMessage
     with RegisterExecutorResponse
+
+  case class RegisterSiteDriver(
+    siteDriverId: String,
+    siteDriverRef: RpcEndpointRef,
+    hostname: String,
+    cores: Int,
+    logUrls: Map[String, String]
+  ) extends CoarseGrainedClusterMessage
 
   // Executors to driver
   case class RegisterExecutor(
@@ -80,6 +88,9 @@ private[spark] object CoarseGrainedClusterMessages {
   case object StopExecutors extends CoarseGrainedClusterMessage
 
   case class RemoveExecutor(executorId: String, reason: ExecutorLossReason)
+    extends CoarseGrainedClusterMessage
+
+  case class RemoveSiteDriver(siteDriverId: String, reason: SiteDriverLossReason)
     extends CoarseGrainedClusterMessage
 
   case class SetupDriver(driver: RpcEndpointRef) extends CoarseGrainedClusterMessage

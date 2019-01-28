@@ -22,13 +22,15 @@ package org.apache.spark.deploy
  * This state is sufficient for the Master to reconstruct its internal data structures during
  * failover.
  */
+// TODO-lzp: maybe has appId, I don't known
 private[deploy] class ExecutorDescription(
-    val appId: String,
+    val siteAppId: String,
     val execId: Int,
     val cores: Int,
     val state: ExecutorState.Value)
   extends Serializable {
 
   override def toString: String =
-    "ExecutorState(appId=%s, execId=%d, cores=%d, state=%s)".format(appId, execId, cores, state)
+    "ExecutorState(siteAppId=%s, execId=%d, cores=%d, state=%s)".format(
+      siteAppId, execId, cores, state)
 }

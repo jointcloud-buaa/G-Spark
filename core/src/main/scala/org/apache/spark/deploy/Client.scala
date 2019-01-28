@@ -26,7 +26,7 @@ import org.apache.log4j.Logger
 
 import org.apache.spark.{SecurityManager, SparkConf}
 import org.apache.spark.deploy.DeployMessages._
-import org.apache.spark.deploy.master.{DriverState, Master}
+import org.apache.spark.deploy.globalmaster.{GlobalDriverState, GlobalMaster}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.util.{SparkExitCode, ThreadUtils, Utils}
@@ -87,18 +87,18 @@ private class ClientEndpoint(
           Seq("{{WORKER_URL}}", "{{USER_JAR}}", driverArgs.mainClass) ++ driverArgs.driverOptions,
           sys.env, classPathEntries, libraryPathEntries, javaOpts)
 
-        val driverDescription = new DriverDescription(
+        val driverDescription = new GlobalDriverDescription(
           driverArgs.jarUrl,
           driverArgs.memory,
           driverArgs.cores,
           driverArgs.supervise,
           command)
-        ayncSendToMasterAndForwardReply[SubmitDriverResponse](
-          RequestSubmitDriver(driverDescription))
+        ayncSendToMasterAndForwardReply[SubmitGlobalDriverResponse](
+          RequestSubmitGlobalDriver(driverDescription))
 
       case "kill" =>
         val driverId = driverArgs.driverId
-        ayncSendToMasterAndForwardReply[KillDriverResponse](RequestKillDriver(driverId))
+        ayncSendToMasterAndForwardReply[KillGlobalDriverResponse](RequestKillDriver(driverId))
     }
   }
 
@@ -123,12 +123,12 @@ private class ClientEndpoint(
     Thread.sleep(5000)
     logInfo("... polling master for driver state")
     val statusResponse =
-      activeMasterEndpoint.askWithRetry[DriverStatusResponse](RequestDriverStatus(driverId))
+      activeMasterEndpoint.askWithRetry[GlobalDriverStatusResponse](RequestDriverStatus(driverId))
     if (statusResponse.found) {
       logInfo(s"State of $driverId is ${statusResponse.state.get}")
       // Worker node, if present
-      (statusResponse.workerId, statusResponse.workerHostPort, statusResponse.state) match {
-        case (Some(id), Some(hostPort), Some(DriverState.RUNNING)) =>
+      (statusResponse.siteMasterId, statusResponse.siteMasterHostPort, statusResponse.state) match {
+        case (Some(id), Some(hostPort), Some(GlobalDriverState.RUNNING)) =>
           logInfo(s"Driver running on $hostPort ($id)")
         case _ =>
       }
@@ -149,7 +149,7 @@ private class ClientEndpoint(
 
   override def receive: PartialFunction[Any, Unit] = {
 
-    case SubmitDriverResponse(master, success, driverId, message) =>
+    case SubmitGlobalDriverResponse(master, success, driverId, message) =>
       logInfo(message)
       if (success) {
         activeMasterEndpoint = master
@@ -159,7 +159,7 @@ private class ClientEndpoint(
       }
 
 
-    case KillDriverResponse(master, driverId, success, message) =>
+    case KillGlobalDriverResponse(master, driverId, success, message) =>
       logInfo(message)
       if (success) {
         activeMasterEndpoint = master
@@ -230,7 +230,7 @@ object Client {
       RpcEnv.create("driverClient", Utils.localHostName(), 0, conf, new SecurityManager(conf))
 
     val masterEndpoints = driverArgs.masters.map(RpcAddress.fromSparkURL).
-      map(rpcEnv.setupEndpointRef(_, Master.ENDPOINT_NAME))
+      map(rpcEnv.setupEndpointRef(_, GlobalMaster.ENDPOINT_NAME))
     rpcEnv.setupEndpoint("client", new ClientEndpoint(rpcEnv, driverArgs, masterEndpoints, conf))
 
     rpcEnv.awaitTermination()

@@ -252,6 +252,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
     // Launch tasks returned by a set of resource offers
     private def launchTasks(tasks: Seq[Seq[TaskDescription]]) {
+      // TODO-lzp-add: add the SubmitTask Event
       for (task <- tasks.flatten) {
         val serializedTask = ser.serialize(task)
         if (serializedTask.limit >= maxRpcMessageSize) {

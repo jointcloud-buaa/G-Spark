@@ -67,22 +67,22 @@ private[spark] class StandaloneSchedulerBackend(
     }
 
     // The endpoint for executors to talk to us
-    val driverUrl = RpcEndpointAddress(
-      sc.conf.get("spark.driver.host"),
-      sc.conf.get("spark.driver.port").toInt,
+    val gdriverUrl = RpcEndpointAddress(
+      sc.conf.get("spark.globalDriver.host"),
+      sc.conf.get("spark.globalDriver.port").toInt,
       CoarseGrainedSchedulerBackend.ENDPOINT_NAME).toString
     val args = Seq(
-      "--driver-url", driverUrl,
-      "--executor-id", "{{EXECUTOR_ID}}",
+      "--global-driver-url", gdriverUrl,
+      "--site-driver-id", "{{SITE_DRIVER_ID}}",
       "--hostname", "{{HOSTNAME}}",
       "--cores", "{{CORES}}",
       "--app-id", "{{APP_ID}}",
-      "--worker-url", "{{WORKER_URL}}")
-    val extraJavaOpts = sc.conf.getOption("spark.executor.extraJavaOptions")
+      "--site-master-url", "{{SITE_MASTER_URL}}")
+    val extraJavaOpts = sc.conf.getOption("spark.siteDriver.extraJavaOptions")
       .map(Utils.splitCommandString).getOrElse(Seq.empty)
-    val classPathEntries = sc.conf.getOption("spark.executor.extraClassPath")
+    val classPathEntries = sc.conf.getOption("spark.siteDriver.extraClassPath")
       .map(_.split(java.io.File.pathSeparator).toSeq).getOrElse(Nil)
-    val libraryPathEntries = sc.conf.getOption("spark.executor.extraLibraryPath")
+    val libraryPathEntries = sc.conf.getOption("spark.siteDriver.extraLibraryPath")
       .map(_.split(java.io.File.pathSeparator).toSeq).getOrElse(Nil)
 
     // When testing, expose the parent class path to the child. This is processed by
@@ -98,10 +98,10 @@ private[spark] class StandaloneSchedulerBackend(
     // Start executors with a few necessary configs for registering with the scheduler
     val sparkJavaOpts = Utils.sparkJavaOpts(conf, SparkConf.isExecutorStartupConf)
     val javaOpts = sparkJavaOpts ++ extraJavaOpts
-    val command = Command("org.apache.spark.executor.CoarseGrainedExecutorBackend",
+    val command = Command("org.apache.spark.executor.CoarseGrainedSiteDriverBackend",
       args, sc.executorEnvs, classPathEntries ++ testingClassPath, libraryPathEntries, javaOpts)
     val appUIAddress = sc.ui.map(_.appUIAddress).getOrElse("")
-    val coresPerExecutor = conf.getOption("spark.executor.cores").map(_.toInt)
+    val coresPerSiteDriver = conf.getOption("spark.siteDriver.cores").map(_.toInt)
     // If we're using dynamic allocation, set our initial executor limit to 0 for now.
     // ExecutorAllocationManager will send the real initial limit to the Master later.
     val initialExecutorLimit =
@@ -110,8 +110,8 @@ private[spark] class StandaloneSchedulerBackend(
       } else {
         None
       }
-    val appDesc = new ApplicationDescription(sc.appName, maxCores, sc.executorMemory, command,
-      appUIAddress, sc.eventLogDir, sc.eventLogCodec, coresPerExecutor, initialExecutorLimit)
+    val appDesc = new ApplicationDescription(sc.appName, maxCores, sc.siteDriverMemory, command,
+      appUIAddress, sc.eventLogDir, sc.eventLogCodec, coresPerSiteDriver)
     client = new StandaloneAppClient(sc.env.rpcEnv, masters, appDesc, this, conf)
     client.start()
     launcherBackend.setState(SparkAppHandle.State.SUBMITTED)
@@ -151,20 +151,15 @@ private[spark] class StandaloneSchedulerBackend(
     }
   }
 
-  override def executorAdded(fullId: String, workerId: String, hostPort: String, cores: Int,
+  override def siteDriverAdded(fullId: String, smId: String, hostPort: String, cores: Int,
     memory: Int) {
-    logInfo("Granted executor ID %s on hostPort %s with %d cores, %s RAM".format(
+    logInfo("Granted site driver ID %s on hostPort %s with %d cores, %s RAM".format(
       fullId, hostPort, cores, Utils.megabytesToString(memory)))
   }
 
-  override def executorRemoved(
-      fullId: String, message: String, exitStatus: Option[Int], workerLost: Boolean) {
-    val reason: ExecutorLossReason = exitStatus match {
-      case Some(code) => ExecutorExited(code, exitCausedByApp = true, message)
-      case None => SlaveLost(message, workerLost = workerLost)
-    }
-    logInfo("Executor %s removed: %s".format(fullId, message))
-    removeExecutor(fullId.split("/")(1), reason)
+  // TODO-lzp
+  override def siteDriverRemoved(
+    fullId: String, message: String, exitStatus: Option[Int], siteMasterLost: Boolean): Unit = {
   }
 
   override def sufficientResourcesRegistered(): Boolean = {
