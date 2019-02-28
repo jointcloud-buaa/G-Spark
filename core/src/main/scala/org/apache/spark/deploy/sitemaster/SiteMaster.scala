@@ -541,13 +541,13 @@ private[deploy] class SiteMaster(
         logWarning(s"Global Driver $gdriverId failed with unrecoverable exception: " +
                      s"${exception.get}")
       case GlobalDriverState.FAILED =>
-        logWarning(s"Driver $gdriverId exited with failure")
+        logWarning(s"Global Driver $gdriverId exited with failure")
       case GlobalDriverState.FINISHED =>
-        logInfo(s"Driver $gdriverId exited successfully")
+        logInfo(s"Global Driver $gdriverId exited successfully")
       case GlobalDriverState.KILLED =>
-        logInfo(s"Driver $gdriverId was killed by user")
+        logInfo(s"Global Driver $gdriverId was killed by user")
       case _ =>
-        logDebug(s"Driver $gdriverId changed state to $state")
+        logDebug(s"Global Driver $gdriverId changed state to $state")
     }
     sendToGlobalMaster(changed)
     val gdriver = globalDrivers.remove(gdriverId).get
@@ -1079,13 +1079,13 @@ private[deploy] object SiteMaster extends Logging{
     cores: Int,
     memory: Int,
     gmUrls: Array[String],
-    masterDir: String,
+    workDir: String,
     conf: SparkConf): (RpcEnv, Int) = {
     val securityMgr = new SecurityManager(conf)
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
-    val gmAddresses = gmUrls.map(RpcAddress.fromSparkURL(_))
+    val gmAddresses = gmUrls.map(RpcAddress.fromSparkURL)
     val smEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME, new SiteMaster(rpcEnv,
-      webUiPort, cores, memory, gmAddresses, ENDPOINT_NAME, masterDir, conf, securityMgr))
+      webUiPort, cores, memory, gmAddresses, ENDPOINT_NAME, workDir, conf, securityMgr))
     val portResponse = smEndpoint.askWithRetry[BoundPortsResponse](BoundPortsRequest)
     (rpcEnv, portResponse.webUIPort)
   }

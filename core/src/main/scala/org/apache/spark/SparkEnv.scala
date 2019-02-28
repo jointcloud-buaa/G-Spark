@@ -153,37 +153,125 @@ object SparkEnv extends Logging {
   }
 
   /**
-   * Create a SparkEnv for the driver.
+   * Create a SparkEnv for the global driver.
    */
-  private[spark] def createDriverEnv(
-      conf: SparkConf,
-      isLocal: Boolean,
-      listenerBus: LiveListenerBus,
-      numCores: Int,
-      mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
-    assert(conf.contains(DRIVER_HOST_ADDRESS),
-      s"${DRIVER_HOST_ADDRESS.key} is not set on the driver!")
-    assert(conf.contains("spark.driver.port"), "spark.driver.port is not set on the driver!")
-    val bindAddress = conf.get(DRIVER_BIND_ADDRESS)
-    val advertiseAddress = conf.get(DRIVER_HOST_ADDRESS)
-    val port = conf.get("spark.driver.port").toInt
+  private[spark] def createGlobalDriverEnv(
+    conf: SparkConf,
+    isLocal: Boolean,
+    listenerBus: LiveListenerBus,
+    numCores: Int,
+    mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
+    assert(conf.contains(GLOBAL_DRIVER_HOST_ADDRESS),
+      s"${GLOBAL_DRIVER_HOST_ADDRESS.key} is not set on the driver!")
+    assert(conf.contains("spark.globalDriver.port"),
+      "spark.globalDriver.port is not set on the driver!")
+    val bindAddress = conf.get(GLOBAL_DRIVER_BIND_ADDRESS)
+    val advertiseAddress = conf.get(GLOBAL_DRIVER_HOST_ADDRESS)
+    val port = conf.get("spark.globalDriver.port").toInt
     val ioEncryptionKey = if (conf.get(IO_ENCRYPTION_ENABLED)) {
       Some(CryptoStreamUtils.createKey(conf))
     } else {
       None
     }
-    create(
-      conf,
-      SparkContext.GLOBAL_DRIVER_IDENTIFIER,
-      bindAddress,
-      advertiseAddress,
-      port,
-      isLocal,
-      numCores,
-      ioEncryptionKey,
-      listenerBus = listenerBus,
-      mockOutputCommitCoordinator = mockOutputCommitCoordinator
+    val gdriverId = SparkContext.GLOBAL_DRIVER_IDENTIFIER
+
+    // only global driver has listenerBus
+    assert(listenerBus != null, "Attempted to create driver SparkEnv with null listener bus!")
+
+    val securityManager = new SecurityManager(conf, ioEncryptionKey)
+    ioEncryptionKey.foreach { _ =>
+      if (!securityManager.isSaslEncryptionEnabled()) {
+        logWarning("I/O encryption enabled without RPC encryption: keys will be visible on the " +
+          "wire.")
+      }
+    }
+
+    val rpcEnv = RpcEnv.create(globalDriverSystemName, bindAddress, advertiseAddress, port, conf,
+      securityManager, false)  // 如果是driver则startServer, 否则不执行startServer
+    conf.set("spark.globalDriver.port", rpcEnv.address.port.toString)  // driver最终绑定的端口
+
+    // 实例化序列器, 默认JavaSerializer类
+    val serializerName = conf.get(
+      "spark.serializer", "org.apache.spark.serializer.JavaSerializer")
+    val serializer = instantiateClass1[Serializer](serializerName, conf)
+    logDebug(s"Using serializer: ${serializer.getClass}")
+    // 1st参数是默认的序列化类
+    val serializerManager = new SerializerManager(serializer, conf, ioEncryptionKey)
+    val closureSerializer = new JavaSerializer(conf)
+
+    // TODO-IMP: 此处的1st参数, 至少在当前实现中, 没有用
+    val broadcastManager = new BroadcastManager(true, conf, securityManager)
+
+    val mapOutputTracker = new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
+    logInfo("Registering " + MapOutputTracker.ENDPOINT_NAME)
+    mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
+      MapOutputTracker.ENDPOINT_NAME,
+      new MapOutputTrackerMasterEndpoint(
+        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf)
     )
+
+    val shortShuffleMgrNames = Map(
+      "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
+      "tungsten-sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName)
+    val shuffleMgrName = conf.get("spark.shuffle.manager", "sort")
+    val shuffleMgrClass = shortShuffleMgrNames.getOrElse(shuffleMgrName.toLowerCase, shuffleMgrName)
+    val shuffleManager = instantiateClass1[ShuffleManager](shuffleMgrClass, conf)
+
+    val useLegacyMemoryManager = conf.getBoolean("spark.memory.useLegacyMode", false)
+    val memoryManager: MemoryManager = if (useLegacyMemoryManager) {
+      new StaticMemoryManager(conf, numCores)
+    } else {
+      UnifiedMemoryManager(conf, numCores)
+    }
+
+    val blockManagerPort = conf.get(GLOBAL_DRIVER_BLOCK_MANAGER_PORT)
+    val blockTransferService =
+      new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
+        blockManagerPort, numCores)
+    logInfo(s"Registering ${BlockManagerMaster.DRIVER_ENDPOINT_NAME}")
+    val blockManagerMasterEndpointRef = rpcEnv.setupEndpoint(
+      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
+      new BlockManagerMasterEndpoint(rpcEnv, isLocal, conf, listenerBus)
+    )
+    val blockManagerMaster = new BlockManagerMaster(
+      blockManagerMasterEndpointRef, conf, true
+    )
+    val blockManager = new BlockManager(gdriverId, rpcEnv,
+      blockManagerMaster, serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
+      blockTransferService, securityManager, numCores)
+
+    // ==
+    val metricsSystem = MetricsSystem.createMetricsSystem("driver", conf, securityManager)
+
+    // ==
+    val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
+      new OutputCommitCoordinator(conf, true)  // mock表示模拟, 应该是用于测试
+    }
+    val occName = "OutputCommitCoordinator"
+    logInfo(s"Registering $occName")
+    val outputCommitCoordinatorRef = rpcEnv.setupEndpoint(occName,
+      new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
+    outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
+
+    val envInstance = new SparkEnv(
+      gdriverId,
+      rpcEnv,
+      serializer,
+      closureSerializer,
+      serializerManager,
+      mapOutputTracker,
+      shuffleManager,
+      broadcastManager,
+      blockManager,
+      securityManager,
+      metricsSystem,
+      memoryManager,
+      outputCommitCoordinator,
+      conf)
+
+    val sparkFilesDir = Utils.createTempDir(Utils.getLocalDir(conf), "userFiles").getAbsolutePath
+    envInstance.driverTmpDir = Some(sparkFilesDir)
+    envInstance
   }
 
   // TODO-lzp
@@ -207,7 +295,7 @@ object SparkEnv extends Logging {
 
     val rpcEnv = RpcEnv.create(siteDriverSystemName, hostname, hostname, port, conf,
       securityManager, false)
-    conf.set("spark.globalDriver.port", rpcEnv.address.port.toString)
+    conf.set("spark.siteDriver.port", rpcEnv.address.port.toString)
 
     // 实例化序列器, 默认JavaSerializer类
     val serializerName = conf.get(
@@ -261,10 +349,10 @@ object SparkEnv extends Logging {
 
     val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
       new OutputCommitCoordinator(conf, false) }
-    val name = "OutputCommitCoordinator"
-    logInfo(s"Registering $name")
+    val occName = "OutputCommitCoordinator"
+    logInfo(s"Registering $occName")
     val outputCommitCoordinatorRef = rpcEnv.setupEndpoint(
-      name, new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
+      occName, new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
     outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
 
     val envInstance = new SparkEnv(
@@ -397,198 +485,6 @@ object SparkEnv extends Logging {
       conf)
 
     SparkEnv.set(envInstance)
-    envInstance
-  }
-
-  /**
-   * Helper method to create a SparkEnv for a driver or an executor.
-   */
-  private def create(
-      conf: SparkConf,
-      executorId: String,
-      bindAddress: String,
-      advertiseAddress: String,
-      port: Int,
-      isLocal: Boolean,
-      numUsableCores: Int,
-      ioEncryptionKey: Option[Array[Byte]],
-      listenerBus: LiveListenerBus = null,
-      mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
-
-    val isGlobalDriver = executorId == SparkContext.GLOBAL_DRIVER_IDENTIFIER
-
-    val isSiteDriver = executorId.startsWith(SparkContext.SITE_DRIVER_IDENTIFIER_PREFIX)
-
-    // Listener bus is only used on the driver
-    if (isGlobalDriver) {
-      assert(listenerBus != null, "Attempted to create driver SparkEnv with null listener bus!")
-    }
-
-    val securityManager = new SecurityManager(conf, ioEncryptionKey)
-    ioEncryptionKey.foreach { _ =>
-      if (!securityManager.isSaslEncryptionEnabled()) {
-        logWarning("I/O encryption enabled without RPC encryption: keys will be visible on the " +
-          "wire.")
-      }
-    }
-
-    val systemName = if (isGlobalDriver) globalDriverSystemName
-      else if (isSiteDriver) siteDriverSystemName
-      else executorSystemName
-    val rpcEnv = RpcEnv.create(systemName, bindAddress, advertiseAddress, port, conf,
-      securityManager, clientMode = !isGlobalDriver)
-
-    // Figure out which port RpcEnv actually bound to in case the original port is 0 or occupied.
-    // In the non-driver case, the RPC env's address may be null since it may not be listening
-    // for incoming connections.
-    if (isGlobalDriver) {
-      conf.set("spark.driver.port", rpcEnv.address.port.toString)
-    } else if (rpcEnv.address != null) {
-      conf.set("spark.executor.port", rpcEnv.address.port.toString)
-      logInfo(s"Setting spark.executor.port to: ${rpcEnv.address.port.toString}")
-    }
-
-    // Create an instance of the class with the given name, possibly initializing it with our conf
-    def instantiateClass[T](className: String): T = {
-      val cls = Utils.classForName(className)
-      // Look for a constructor taking a SparkConf and a boolean isDriver, then one taking just
-      // SparkConf, then one taking no arguments
-      try {
-        cls.getConstructor(classOf[SparkConf], java.lang.Boolean.TYPE)
-          .newInstance(conf, new java.lang.Boolean(isGlobalDriver))
-          .asInstanceOf[T]
-      } catch {
-        case _: NoSuchMethodException =>
-          try {
-            cls.getConstructor(classOf[SparkConf]).newInstance(conf).asInstanceOf[T]
-          } catch {
-            case _: NoSuchMethodException =>
-              cls.getConstructor().newInstance().asInstanceOf[T]
-          }
-      }
-    }
-
-    // Create an instance of the class named by the given SparkConf property, or defaultClassName
-    // if the property is not set, possibly initializing it with our conf
-    def instantiateClassFromConf[T](propertyName: String, defaultClassName: String): T = {
-      instantiateClass[T](conf.get(propertyName, defaultClassName))
-    }
-
-    val serializer = instantiateClassFromConf[Serializer](
-      "spark.serializer", "org.apache.spark.serializer.JavaSerializer")
-    logDebug(s"Using serializer: ${serializer.getClass}")
-
-    val serializerManager = new SerializerManager(serializer, conf, ioEncryptionKey)
-
-    val closureSerializer = new JavaSerializer(conf)
-
-    def registerOrLookupEndpoint(
-        name: String, endpointCreator: => RpcEndpoint):
-      RpcEndpointRef = {
-      if (isGlobalDriver) {
-        logInfo("Registering " + name)
-        rpcEnv.setupEndpoint(name, endpointCreator)
-      } else {
-        RpcUtils.makeDriverRef(name, conf, rpcEnv)
-      }
-    }
-
-    val broadcastManager = new BroadcastManager(isGlobalDriver, conf, securityManager)
-
-    val mapOutputTracker = if (isGlobalDriver) {
-      new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
-    } else {
-      new MapOutputTrackerWorker(conf)
-    }
-
-    // Have to assign trackerEndpoint after initialization as MapOutputTrackerEndpoint
-    // requires the MapOutputTracker itself
-    mapOutputTracker.trackerEndpoint = registerOrLookupEndpoint(MapOutputTracker.ENDPOINT_NAME,
-      new MapOutputTrackerMasterEndpoint(
-        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf))
-
-    // Let the user specify short names for shuffle managers
-    val shortShuffleMgrNames = Map(
-      "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
-      "tungsten-sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName)
-    val shuffleMgrName = conf.get("spark.shuffle.manager", "sort")
-    val shuffleMgrClass = shortShuffleMgrNames.getOrElse(shuffleMgrName.toLowerCase, shuffleMgrName)
-    val shuffleManager = instantiateClass[ShuffleManager](shuffleMgrClass)
-
-    val useLegacyMemoryManager = conf.getBoolean("spark.memory.useLegacyMode", false)
-    val memoryManager: MemoryManager =
-      if (useLegacyMemoryManager) {
-        new StaticMemoryManager(conf, numUsableCores)
-      } else {
-        UnifiedMemoryManager(conf, numUsableCores)
-      }
-
-    val blockManagerPort = if (isGlobalDriver) {
-      conf.get(GLOBAL_DRIVER_BLOCK_MANAGER_PORT)
-    } else {
-      conf.get(BLOCK_MANAGER_PORT)
-    }
-
-    val blockTransferService =
-      new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
-        blockManagerPort, numUsableCores)
-
-    val blockManagerMaster = new BlockManagerMaster(registerOrLookupEndpoint(
-      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
-      new BlockManagerMasterEndpoint(rpcEnv, isLocal, conf, listenerBus)),
-      conf, isGlobalDriver)
-
-    // NB: blockManager is not valid until initialize() is called later.
-    val blockManager = new BlockManager(executorId, rpcEnv, blockManagerMaster,
-      serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
-      blockTransferService, securityManager, numUsableCores)
-
-    val metricsSystem = if (isGlobalDriver) {
-      // Don't start metrics system right now for Driver.
-      // We need to wait for the task scheduler to give us an app ID.
-      // Then we can start the metrics system.
-      MetricsSystem.createMetricsSystem("driver", conf, securityManager)
-    } else {
-      // We need to set the executor ID before the MetricsSystem is created because sources and
-      // sinks specified in the metrics configuration file will want to incorporate this executor's
-      // ID into the metrics they report.
-      conf.set("spark.executor.id", executorId)
-      val ms = MetricsSystem.createMetricsSystem("executor", conf, securityManager)
-      ms.start()
-      ms
-    }
-
-    val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
-      new OutputCommitCoordinator(conf, isGlobalDriver)
-    }
-    val outputCommitCoordinatorRef = registerOrLookupEndpoint("OutputCommitCoordinator",
-      new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
-    outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
-
-    val envInstance = new SparkEnv(
-      executorId,
-      rpcEnv,
-      serializer,
-      closureSerializer,
-      serializerManager,
-      mapOutputTracker,
-      shuffleManager,
-      broadcastManager,
-      blockManager,
-      securityManager,
-      metricsSystem,
-      memoryManager,
-      outputCommitCoordinator,
-      conf)
-
-    // Add a reference to tmp dir created by driver, we will delete this tmp dir when stop() is
-    // called, and we only need to do it for driver. Because driver may run as a service, and if we
-    // don't delete this tmp dir when sc is stopped, then will create too many tmp dirs.
-    if (isGlobalDriver) {
-      val sparkFilesDir = Utils.createTempDir(Utils.getLocalDir(conf), "userFiles").getAbsolutePath
-      envInstance.driverTmpDir = Some(sparkFilesDir)
-    }
-
     envInstance
   }
 

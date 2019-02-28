@@ -255,7 +255,7 @@ class SparkContext(config: SparkConf) extends Logging {
       conf: SparkConf,
       isLocal: Boolean,
       listenerBus: LiveListenerBus): SparkEnv = {
-    SparkEnv.createDriverEnv(conf, isLocal, listenerBus, SparkContext.numDriverCores(master))
+    SparkEnv.createGlobalDriverEnv(conf, isLocal, listenerBus, SparkContext.numDriverCores(master))
   }
 
   private[spark] def env: SparkEnv = _env
@@ -397,8 +397,8 @@ class SparkContext(config: SparkConf) extends Logging {
 
     // Set Spark driver host and port system properties. This explicitly sets the configuration
     // instead of relying on the default value of the config constant.
-    _conf.set(DRIVER_HOST_ADDRESS, _conf.get(DRIVER_HOST_ADDRESS))
-    _conf.setIfMissing("spark.driver.port", "0")
+    _conf.set(GLOBAL_DRIVER_HOST_ADDRESS, _conf.get(GLOBAL_DRIVER_HOST_ADDRESS))
+    _conf.setIfMissing("spark.globalDriver.port", "0")
 
     _conf.set("spark.executor.id", SparkContext.GLOBAL_DRIVER_IDENTIFIER)
 
@@ -2418,7 +2418,7 @@ object SparkContext extends Logging {
    * changed to `driver` because the angle brackets caused escaping issues in URLs and XML (see
    * SPARK-6716 for more details).
    */
-  private[spark] val GLOBAL_DRIVER_IDENTIFIER = "driver"
+  private[spark] val GLOBAL_DRIVER_IDENTIFIER = "global-driver"
 
   private[spark] val SITE_DRIVER_IDENTIFIER_PREFIX = "site-driver"
 

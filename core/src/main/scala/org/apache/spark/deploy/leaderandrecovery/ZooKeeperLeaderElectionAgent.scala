@@ -22,12 +22,21 @@ import org.apache.curator.framework.recipes.leader.{LeaderLatch, LeaderLatchList
 
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.SparkCuratorUtil
+import org.apache.spark.deploy.globalmaster.GlobalMaster
+import org.apache.spark.deploy.sitemaster.SiteMaster
 import org.apache.spark.internal.Logging
 
-private[deploy] class ZooKeeperLeaderElectionAgent(val masterInstance: LeaderElectable,
-    conf: SparkConf) extends LeaderLatchListener with LeaderElectionAgent with Logging  {
+private[deploy] class ZooKeeperLeaderElectionAgent(
+  val masterInstance: LeaderElectable,
+  conf: SparkConf
+) extends LeaderLatchListener with LeaderElectionAgent with Logging  {
 
-  val WORKING_DIR = conf.get("spark.deploy.zookeeper.dir", "/spark") + "/leader_election"
+  val WORKING_DIR = (masterInstance match {
+    case _: GlobalMaster =>
+    conf.get("spark.deploy.globalMaster.zookeeper.dir", "/global_master")
+    case _: SiteMaster =>
+    conf.get("spark.deploy.siteMaster.zookeeper.dir", "/site_master")
+  }) + "/leader_election"
 
   private var zk: CuratorFramework = _
   private var leaderLatch: LeaderLatch = _

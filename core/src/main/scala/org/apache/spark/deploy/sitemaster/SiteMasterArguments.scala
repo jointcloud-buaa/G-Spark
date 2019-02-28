@@ -88,11 +88,11 @@ private[sitemaster] class SiteMasterArguments(args: Array[String], conf: SparkCo
       webUiPort = value
       parse(tail)
 
-    case ("--properties-file") :: value :: tail =>
+    case "--properties-file" :: value :: tail =>
       propertiesFile = value
       parse(tail)
 
-    case ("--help") :: tail =>
+    case "--help" :: tail =>
       printUsageAndExit(0)
 
     case value :: tail =>

@@ -52,7 +52,7 @@ private[spark] abstract class WebUI(
   protected val pageToHandlers = new HashMap[WebUIPage, ArrayBuffer[ServletContextHandler]]
   protected var serverInfo: Option[ServerInfo] = None
   protected val publicHostName = Option(conf.getenv("SPARK_PUBLIC_DNS")).getOrElse(
-    conf.get(DRIVER_HOST_ADDRESS))
+    conf.get(GLOBAL_DRIVER_HOST_ADDRESS))
   private val className = Utils.getFormattedClassName(this)
 
   def getBasePath: String = basePath
