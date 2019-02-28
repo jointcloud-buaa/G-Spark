@@ -27,7 +27,7 @@ ORIGINAL_ARGS="$@"
 . "${SPARK_HOME}/bin/load-spark-env.sh"
 
 if [ "$SPARK_SITE_MASTER_PORT" = "" ]; then
-  SPARK_SITE_MASTER_PORT=7077
+  SPARK_SITE_MASTER_PORT=7088
 fi
 
 if [ "$SPARK_SITE_MASTER_HOST" = "" ]; then
@@ -42,7 +42,7 @@ if [ "$SPARK_SITE_MASTER_HOST" = "" ]; then
 fi
 
 if [ "$SPARK_SITE_MASTER_WEBUI_PORT" = "" ]; then
-  SPARK_SITE_MASTER_WEBUI_PORT=8080
+  SPARK_SITE_MASTER_WEBUI_PORT=8090
 fi
 
 "${SPARK_HOME}/sbin"/spark-daemon.sh start $CLASS 1 \

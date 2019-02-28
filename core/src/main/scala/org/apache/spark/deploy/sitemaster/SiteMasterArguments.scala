@@ -24,8 +24,8 @@ import org.apache.spark.util.{IntParam, Utils}
 
 private[sitemaster] class SiteMasterArguments(args: Array[String], conf: SparkConf) {
   var host = Utils.localHostName()
-  var port = 7077
-  var webUiPort = 8080
+  var port = 7088
+  var webUiPort = 8090
   var cores = Utils.inferDefaultCores()
   var memory = Utils.inferDefaultMemory()
   var gmasters: Array[String] = _

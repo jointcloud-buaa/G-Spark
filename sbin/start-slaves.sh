@@ -28,7 +28,7 @@ fi
 
 # Find the port number for the master
 if [ "$SPARK_MASTER_PORT" = "" ]; then
-  SPARK_MASTER_PORT=7077
+  SPARK_MASTER_PORT=7088
 fi
 
 if [ "$SPARK_MASTER_HOST" = "" ]; then
