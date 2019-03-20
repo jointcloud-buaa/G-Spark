@@ -17,12 +17,15 @@
 # limitations under the License.
 #
 
-# Stops the master on the machine this script is executed on.
-
 if [ -z "${SPARK_HOME}" ]; then
   export SPARK_HOME="$(cd "`dirname "$0"`"/..; pwd)"
 fi
 
 . "${SPARK_HOME}/sbin/spark-config.sh"
 
-"${SPARK_HOME}/sbin"/spark-daemon.sh stop org.apache.spark.deploy.master.Master 1
+. "${SPARK_HOME}/bin/load-spark-env.sh"
+
+# 这里使用了另一个不存在于标准spark的文件, 用于记录当前的site master节点
+export SPARK_SLAVES=${SPARK_CONF_DIR}/sitemasters
+
+"${SPARK_HOME}/sbin/slaves.sh" cd "${SPARK_HOME}" \; "${SPARK_HOME}/sbin"/stop-cluster.sh

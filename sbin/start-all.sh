@@ -29,7 +29,7 @@ fi
 . "${SPARK_HOME}/sbin/spark-config.sh"
 
 # Start Master
-"${SPARK_HOME}/sbin"/start-master.sh
+"${SPARK_HOME}/sbin"/start-global-master.sh
 
 # Start Workers
-"${SPARK_HOME}/sbin"/start-slaves.sh
+"${SPARK_HOME}/sbin"/start-clusters.sh
