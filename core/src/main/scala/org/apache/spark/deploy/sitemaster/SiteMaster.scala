@@ -381,7 +381,7 @@ private[deploy] class SiteMaster(
         }
       }
 
-    case LaunchGlobalDriver(gdriverId, gdriverDesc) =>  // TODO-lzp
+    case LaunchGlobalDriver(gdriverId, gdriverDesc) =>
       logInfo(s"Asked to launch global driver $gdriverId")
       val gdriver = new GlobalDriverRunner(
         conf,

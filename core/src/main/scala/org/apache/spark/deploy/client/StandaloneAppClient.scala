@@ -26,9 +26,9 @@ import scala.util.{Failure, Success}
 import scala.util.control.NonFatal
 
 import org.apache.spark.SparkConf
-import org.apache.spark.deploy.{ApplicationDescription, ExecutorState}
+import org.apache.spark.deploy.ApplicationDescription
 import org.apache.spark.deploy.DeployMessages._
-import org.apache.spark.deploy.globalmaster.GlobalMaster
+import org.apache.spark.deploy.globalmaster.{GlobalMaster, SiteDriverState}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
@@ -174,8 +174,13 @@ private[spark] class StandaloneAppClient(
           fullId, smId, hostPort, cores
         ))
 
-        // TODO-lzp: wait to fill code
-      case SiteDriverUpdated =>
+      case SiteDriverUpdated(id, state, msg, exitStatus, smLost) =>
+        val fullId = s"$appId/$id"
+        val msgText = msg.map(s => s"($s)").getOrElse("")
+        logInfo(s"SiteDriver updated: $fullId is now $state$msgText")
+        if (SiteDriverState.isFinished(state)) {
+          listener.siteDriverRemoved(fullId, msg.getOrElse(""), exitStatus, smLost)
+        }
 
       case GlobalMasterChanged(gmRef, gmWebUiUrl) =>
         logInfo("Global Master has changed, new master is at " + gmRef.address.toSparkURL)

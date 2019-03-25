@@ -98,10 +98,11 @@ private[spark] class StandaloneSchedulerBackend(
     // Start executors with a few necessary configs for registering with the scheduler
     val sparkJavaOpts = Utils.sparkJavaOpts(conf, SparkConf.isExecutorStartupConf)
     val javaOpts = sparkJavaOpts ++ extraJavaOpts
-    val command = Command("org.apache.spark.executor.CoarseGrainedSiteDriverBackend",
+    val command = Command("org.apache.spark.siteDriver.CoarseGrainedSiteDriverBackend",
       args, sc.executorEnvs, classPathEntries ++ testingClassPath, libraryPathEntries, javaOpts)
     val appUIAddress = sc.ui.map(_.appUIAddress).getOrElse("")
     val coresPerSiteDriver = conf.getOption("spark.siteDriver.cores").map(_.toInt)
+    val coresPerExecutor = conf.getOption("spark.executor.cores").map(_.toInt)
     // If we're using dynamic allocation, set our initial executor limit to 0 for now.
     // ExecutorAllocationManager will send the real initial limit to the Master later.
     val initialExecutorLimit =
@@ -110,8 +111,18 @@ private[spark] class StandaloneSchedulerBackend(
       } else {
         None
       }
-    val appDesc = new ApplicationDescription(sc.appName, maxCores, sc.siteDriverMemory, command,
-      appUIAddress, sc.eventLogDir, sc.eventLogCodec, coresPerSiteDriver)
+    val appDesc = ApplicationDescription(
+      sc.appName,
+      maxCores,
+      sc.siteDriverMemory,
+      sc.executorMemory,
+      command,
+      appUIAddress,
+      sc.eventLogDir,
+      sc.eventLogCodec,
+      coresPerSiteDriver,
+      coresPerExecutor
+    )
     client = new StandaloneAppClient(sc.env.rpcEnv, masters, appDesc, this, conf)
     client.start()
     launcherBackend.setState(SparkAppHandle.State.SUBMITTED)

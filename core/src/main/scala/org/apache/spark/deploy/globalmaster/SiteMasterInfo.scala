@@ -23,14 +23,15 @@ import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.util.Utils
 
 private[spark] class SiteMasterInfo(
-                                   val id: String,
-                                   val host: String,
-                                   val port: Int,
-                                   val cores: Int,
-                                   val memory: Int,
-                                   val endpoint: RpcEndpointRef,
-                                   val webUiAddress: String
-                                   ) extends Serializable {
+  val id: String,
+  val host: String,
+  val port: Int,
+  val cores: Int,
+  val memory: Int,
+  val endpoint: RpcEndpointRef,
+  val webUiAddress: String
+) extends Serializable {
+
   Utils.checkHost(host, "Expected hostname")
   assert(port > 0)
 
@@ -85,18 +86,22 @@ private[spark] class SiteMasterInfo(
   }
 
   def addSiteDriver(sdDesc: SiteDriverDesc): Unit = {
-    siteDrivers(sdDesc.fullId) = sdDesc
+    // the application id is the key, because the SiteMaster just has one siteDriver
+    // for a application at anytime.
+    siteDrivers(sdDesc.application.id) = sdDesc
     coresUsed += sdDesc.cores
     memoryUsed += sdDesc.memory
   }
 
   def removeSiteDriver(sdriver: SiteDriverDesc): Unit = {
-    if (siteDrivers.contains(sdriver.fullId)) {
-      siteDrivers -= sdriver.fullId
+    if (siteDrivers.contains(sdriver.application.id)) {
+      siteDrivers -= sdriver.application.id
       coresUsed -= sdriver.cores
       memoryUsed -= sdriver.memory
     }
   }
+
+  def hasSiteDriver(appId: String): Boolean = siteDrivers.contains(appId)
 
   def isAlive(): Boolean = this.state == SiteMasterOutState.ALIVE
 }

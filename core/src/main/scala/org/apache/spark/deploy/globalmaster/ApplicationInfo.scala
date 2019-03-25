@@ -40,7 +40,6 @@ private[spark] class ApplicationInfo(
   @transient var siteDrivers: mutable.HashMap[String, SiteDriverDesc] = _
   // just for webui
   @transient var removedSiteDrivers: ArrayBuffer[SiteDriverDesc] = _
-  @transient var coresGranted: Int = _
   @transient var endTime: Long = _
   @transient var appSource: ApplicationSource = _
 
@@ -64,7 +63,6 @@ private[spark] class ApplicationInfo(
   private def init() {
     state = ApplicationState.WAITING
     siteDrivers = new mutable.HashMap[String, SiteDriverDesc]
-    coresGranted = 0
     endTime = -1L
     nextSiteDriverId = 0
     appSource = new ApplicationSource(this)
@@ -94,7 +92,6 @@ private[spark] class ApplicationInfo(
       newSiteDriverId(sdId), this, master, cores, desc.memoryPerSiteDriverMB
     )
     siteDrivers(sdriver.id) = sdriver
-    coresGranted += cores
     sdriver
   }
 
@@ -102,13 +99,10 @@ private[spark] class ApplicationInfo(
     if (siteDrivers.contains(sd.id)) {
       removedSiteDrivers += siteDrivers(sd.id)
       siteDrivers -= sd.id
-      coresGranted -= sd.cores
     }
   }
 
   private val requestedCores = desc.maxCores.getOrElse(defaultCores)
-
-  private[globalmaster] def coresLeft: Int = requestedCores - coresGranted
 
   private var _retryCount = 0
 

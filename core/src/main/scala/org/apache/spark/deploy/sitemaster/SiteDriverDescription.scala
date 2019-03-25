@@ -20,12 +20,13 @@ package org.apache.spark.deploy.sitemaster
 import org.apache.spark.deploy.globalmaster.SiteDriverState
 
 private[deploy] class SiteDriverDescription(
-                                             val appId: String,
-                                             val sdriverId: String,
-                                             val cores: Int,
-                                             val state: SiteDriverState.Value
-                                           ) extends Serializable {
+  val appId: String,
+  val sdriverId: String,
+  val cores: Int,
+  val state: SiteDriverState.Value
+) extends Serializable {
+
   override def toString: String =
-    "SiteDriverState(appId=%s, sdriverId=%d, cores=%d, state=%s)".format(
+    "SiteDriverState(appId=%s, sdriverId=%s, cores=%d, state=%s)".format(
       appId, sdriverId, cores, state)
 }

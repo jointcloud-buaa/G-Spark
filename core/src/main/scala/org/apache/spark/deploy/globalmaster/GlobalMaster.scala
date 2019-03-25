@@ -267,7 +267,6 @@ private[deploy] class GlobalMaster(
             appInfo.resetRetryCount()
           }
 
-          // TODO-lzp
           sd.application.driver.send(
             SiteDriverUpdated(sdriverId, state, message, exitStatus, false))
 
@@ -613,14 +612,16 @@ private[deploy] class GlobalMaster(
     startSiteDriverOnSiteMaster()
   }
 
-  // TODO-lzp
   // 很简单, 每个SiteMaster, 在资源允许的情况下, 都要启动一个SiteDriver
   private def startSiteDriverOnSiteMaster(): Unit = {
-    for (app <- waitingApps if app.coresLeft > 0) {
+    for (app <- waitingApps) {
       val coresPerSiteDriver = app.desc.coresPerSiteDriver
-      val usableSiteMasters = siteMasters.toArray.filter(_.state == SiteMasterOutState.ALIVE)
-        .filter(sm => sm.memoryFree >= app.desc.memoryPerSiteDriverMB &&
-          sm.coresFree >= coresPerSiteDriver.getOrElse(2))  // 默认每个siteDriver占用2个cpu
+      val usableSiteMasters = siteMasters.toArray.filter(sm =>
+        sm.state == SiteMasterOutState.ALIVE &&
+        !sm.hasSiteDriver(app.id) &&  // the siteMaster has not a siteDriver for the app
+        sm.memoryFree >= app.desc.memoryPerSiteDriverMB &&
+        sm.coresFree >= coresPerSiteDriver.getOrElse(2)
+      )
       for (smaster <- usableSiteMasters) {
         val sdriver = app.addSiteDriver(smaster, coresPerSiteDriver.getOrElse(2))
         launchSiteDriver(smaster, sdriver)
@@ -674,9 +675,13 @@ private[deploy] class GlobalMaster(
     if (reverseProxy) {
       webUi.removeProxyTargets(master.id)
     }
-    // TODO-lzp-add: site drivers
     for (sdriver <- master.siteDrivers.values) {
-
+      logInfo(s"Telling app of lost siteDriver: ${sdriver.id}")
+      sdriver.application.driver.send(SiteDriverUpdated(
+        sdriver.id, SiteDriverState.LOST, Some("siteMaster lost"), None, siteMasterLost = true
+      ))
+      sdriver.state = SiteDriverState.LOST
+      sdriver.application.removeSiteDriver(sdriver)
     }
     for (gdriver <- master.globalDrivers.values) {
       if (gdriver.desc.supervise) {

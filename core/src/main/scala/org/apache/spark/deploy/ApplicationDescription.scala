@@ -22,13 +22,15 @@ import java.net.URI
 private[spark] case class ApplicationDescription(
     name: String,
     maxCores: Option[Int],
-    memoryPerSiteDriverMB: Int,
+    memoryPerSiteDriverMB: Int,  // 限制应用是否可在某个集群上启动SiteDriver
+    memoryPerExecutorMB: Int,
     command: Command, // to start site driver
     appUiUrl: String,
     eventLogDir: Option[URI] = None,
     // short name of compression codec used when writing event logs, if any (e.g. lzf)
     eventLogCodec: Option[String] = None,
-  coresPerSiteDriver: Option[Int] = None,
+    coresPerSiteDriver: Option[Int] = None,
+    coresPerExecutor: Option[Int] = None,
     // number of executors this application wants to start with,
     // only used if dynamic allocation is enabled
 //  initialExecutorLimit: Option[Int] = None,   // related to dynamic allocation
