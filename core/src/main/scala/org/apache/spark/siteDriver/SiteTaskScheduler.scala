@@ -14,20 +14,32 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.spark.siteDriver
 
-package org.apache.spark.deploy.sitemaster
+import org.apache.spark.scheduler.{ExecutorLossReason, TaskSet}
+import org.apache.spark.storage.BlockManagerId
+import org.apache.spark.util.AccumulatorV2
 
-import org.apache.spark.deploy.Command
+private[spark] trait SiteTaskScheduler {
 
-private[spark] case class SiteAppDescription(
-  name: String,
-  maxCores: Option[Int],
-  memoryPerExecutorMB: Int,
-  command: Command,  // to start executor
-  // TODO-lzp: how to add eventLogDir
-  coresPerExecutor: Option[Int] = None,
-  initialExecutorLimit: Option[Int] = None,
-  user: String = System.getProperty("user.name", "<unknown>")) {
+  def start(): Unit
+  def stop(): Unit
+  def postStartHook(): Unit
 
-  override def toString: String = s"SiteAppDescription($name)"
+  // 在当前集群提交任务
+  def submitTasks(taskSet: TaskSet): Unit
+
+  def cancelTasks(stageId: Int, interruptThread: Boolean): Unit
+
+  // 接受来自executor的心跳
+  def executorHeartbeatReceived(
+    execId: String,
+    accumUpdates: Array[(Long, Seq[AccumulatorV2[_, _]])],
+    blockManagerId: BlockManagerId): Boolean
+
+  def executorLost(executorId: String, reason: ExecutorLossReason): Unit
+
+  def siteAppId(): String
+
+  def defaultParallelism(): Int
 }

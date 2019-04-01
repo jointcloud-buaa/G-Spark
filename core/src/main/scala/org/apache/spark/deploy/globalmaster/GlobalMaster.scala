@@ -34,6 +34,7 @@ import org.apache.spark.deploy.leaderandrecovery._
 import org.apache.spark.deploy.leaderandrecovery.LeaderMessages.{ElectedLeader, RevokedLeadership}
 import org.apache.spark.deploy.leaderandrecovery.RecoveryMessages.CompleteRecovery
 import org.apache.spark.deploy.rest.StandaloneRestServer
+import org.apache.spark.deploy.sitemaster.SiteMaster
 import org.apache.spark.internal.Logging
 import org.apache.spark.metrics.MetricsSystem
 import org.apache.spark.rpc._
@@ -253,6 +254,7 @@ private[deploy] class GlobalMaster(
       }
 
       // from SiteMaster
+      // 更新ApplicationInfo中存储的关于SiteDriver's状态
     case SiteDriverStateChanged(appId, sdriverId, state, message, exitStatus) =>
       val sdriverOption = idToApp.get(appId).flatMap(app => app.siteDrivers.get(sdriverId))
       sdriverOption match {
@@ -506,6 +508,13 @@ private[deploy] class GlobalMaster(
     case KillExecutors(appId, executorIds) =>
 //      val formattedExecutorIds = formatExecutorIds(executorIds)
 //      context.reply(handleKillExecutors(appId, formattedExecutorIds))
+
+    case GetSiteMastersAddress =>
+      context.reply(SiteMastersAddressResponse(
+        addressToSiteMaster.keys.map(addr =>
+          RpcEndpointAddress.apply(addr, SiteMaster.ENDPOINT_NAME).toString
+        ).toArray[String]
+      ))
   }
 
   override def onDisconnected(address: RpcAddress): Unit = {
@@ -623,6 +632,7 @@ private[deploy] class GlobalMaster(
         sm.coresFree >= coresPerSiteDriver.getOrElse(2)
       )
       for (smaster <- usableSiteMasters) {
+        // TODO-lzp: the cores 2 is hard code
         val sdriver = app.addSiteDriver(smaster, coresPerSiteDriver.getOrElse(2))
         launchSiteDriver(smaster, sdriver)
         app.state = ApplicationState.RUNNING

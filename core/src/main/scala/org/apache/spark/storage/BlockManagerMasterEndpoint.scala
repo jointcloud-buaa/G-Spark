@@ -117,6 +117,10 @@ class BlockManagerMasterEndpoint(
       removeExecutor(execId)
       context.reply(true)
 
+      // TODO-lzp: remove sd from blockmanagermaster
+    case RemoveSiteDriver(sdriverId) =>
+      logInfo("#lizp#: received RemoveSiteDriver. Do nothing now")
+
     case StopBlockManagerMaster =>
       context.reply(true)
       stop()

@@ -84,8 +84,9 @@ private[deploy] object JsonProtocol {
   def writeExecutorRunner(obj: ExecutorRunner): JObject = {
     ("id" -> obj.execId) ~
     ("memory" -> obj.memory) ~
-    ("appid" -> obj.siteAppId) ~
-    ("appdesc" -> writeApplicationDescription(obj.appDesc))
+    ("appid" -> obj.siteAppId)
+    // TODO-lzp: 写SiteAppDescription
+//    ("appdesc" -> writeApplicationDescription(obj.appDesc))
   }
 
   // TODO-lzp

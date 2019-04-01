@@ -49,12 +49,12 @@ private[spark] object ExecutorKilled extends ExecutorLossReason("Executor killed
  * not yet fail any tasks that were running in the executor before the real loss reason
  * is known.
  */
-private [spark] object LossReasonPending extends ExecutorLossReason("Pending loss reason.")
+private [spark] object ExecutorLossReasonPending extends ExecutorLossReason("Pending loss reason.")
 
 /**
  * @param _message human readable loss reason
  * @param workerLost whether the worker is confirmed lost too (i.e. including shuffle service)
  */
 private[spark]
-case class SlaveLost(_message: String = "Slave lost", workerLost: Boolean = false)
+case class ExecutorSlaveLost(_message: String = "Slave lost", workerLost: Boolean = false)
   extends ExecutorLossReason(_message)

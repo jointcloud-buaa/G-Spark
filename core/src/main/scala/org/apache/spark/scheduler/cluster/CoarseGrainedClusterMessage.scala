@@ -37,18 +37,14 @@ private[spark] object CoarseGrainedClusterMessages {
 
   case object RetrieveLastAllocatedExecutorId extends CoarseGrainedClusterMessage
 
-  // Driver to executors
-  case class LaunchTask(data: SerializableBuffer) extends CoarseGrainedClusterMessage
+  // Site drivers to global driver
+  sealed trait RegisterSiteDriverResponse
 
-  case class KillTask(taskId: Long, executor: String, interruptThread: Boolean)
-    extends CoarseGrainedClusterMessage
+  case object RegisteredSiteDriver extends CoarseGrainedClusterMessage
+    with RegisterSiteDriverResponse
 
-  sealed trait RegisterExecutorResponse
-
-  case object RegisteredExecutor extends CoarseGrainedClusterMessage with RegisterExecutorResponse
-
-  case class RegisterExecutorFailed(message: String) extends CoarseGrainedClusterMessage
-    with RegisterExecutorResponse
+  case class RegisterSiteDriverFailed(msg: String) extends CoarseGrainedClusterMessage
+    with RegisterSiteDriverResponse
 
   case class RegisterSiteDriver(
     siteDriverId: String,
@@ -58,37 +54,12 @@ private[spark] object CoarseGrainedClusterMessages {
     logUrls: Map[String, String]
   ) extends CoarseGrainedClusterMessage
 
-  // Executors to driver
-  case class RegisterExecutor(
-      executorId: String,
-      executorRef: RpcEndpointRef,
-      hostname: String,
-      cores: Int,
-      logUrls: Map[String, String])
-    extends CoarseGrainedClusterMessage
-
-  case class StatusUpdate(executorId: String, taskId: Long, state: TaskState,
-    data: SerializableBuffer) extends CoarseGrainedClusterMessage
-
-  object StatusUpdate {
-    /** Alternate factory method that takes a ByteBuffer directly for the data field */
-    def apply(executorId: String, taskId: Long, state: TaskState, data: ByteBuffer)
-      : StatusUpdate = {
-      StatusUpdate(executorId, taskId, state, new SerializableBuffer(data))
-    }
-  }
-
   // Internal messages in driver
-  case object ReviveOffers extends CoarseGrainedClusterMessage
+  case object StopGlobalDriver extends CoarseGrainedClusterMessage
 
-  case object StopDriver extends CoarseGrainedClusterMessage
+  case object StopSiteDriver extends CoarseGrainedClusterMessage
 
-  case object StopExecutor extends CoarseGrainedClusterMessage
-
-  case object StopExecutors extends CoarseGrainedClusterMessage
-
-  case class RemoveExecutor(executorId: String, reason: ExecutorLossReason)
-    extends CoarseGrainedClusterMessage
+  case object StopSiteDrivers extends CoarseGrainedClusterMessage
 
   case class RemoveSiteDriver(siteDriverId: String, reason: SiteDriverLossReason)
     extends CoarseGrainedClusterMessage
@@ -122,4 +93,52 @@ private[spark] object CoarseGrainedClusterMessages {
   // Used internally by executors to shut themselves down.
   case object Shutdown extends CoarseGrainedClusterMessage
 
+  // TODO-lzp: 不是很明白为什么下面的消息放到另一个文件就不识别了
+  // Driver to executors
+  case class LaunchTask(data: SerializableBuffer)
+    extends CoarseGrainedClusterMessage
+
+  case class KillTask(taskId: Long, executor: String, interruptThread: Boolean)
+    extends CoarseGrainedClusterMessage
+
+  sealed trait RegisterExecutorResponse
+
+  case object RegisteredExecutor
+    extends CoarseGrainedClusterMessage with RegisterExecutorResponse
+
+  case class RegisterExecutorFailed(message: String)
+    extends CoarseGrainedClusterMessage with RegisterExecutorResponse
+
+  // Executors to driver
+  case class RegisterExecutor(
+    executorId: String,
+    executorRef: RpcEndpointRef,
+    hostname: String,
+    cores: Int,
+    logUrls: Map[String, String])
+    extends CoarseGrainedClusterMessage
+
+  case class ExecutorStatusUpdate(executorId: String, taskId: Long, state: TaskState,
+    data: SerializableBuffer) extends CoarseGrainedClusterMessage
+
+  object ExecutorStatusUpdate {
+    /** Alternate factory method that takes a ByteBuffer directly for the data field */
+    def apply(executorId: String, taskId: Long, state: TaskState, data: ByteBuffer)
+    : ExecutorStatusUpdate = {
+      ExecutorStatusUpdate(executorId, taskId, state, new SerializableBuffer(data))
+    }
+  }
+
+  // Internal messages in site driver
+  case object ReviveOffers extends CoarseGrainedClusterMessage
+
+  case object StopExecutor extends CoarseGrainedClusterMessage
+
+  case object StopExecutors extends CoarseGrainedClusterMessage
+
+  case class RemoveExecutor(executorId: String, reason: ExecutorLossReason)
+    extends CoarseGrainedClusterMessage
+
+  case class ClusterReady(sdriverId: String, sdriverRef: RpcEndpointRef, siteMasterAddress: String)
+    extends CoarseGrainedClusterMessage
 }

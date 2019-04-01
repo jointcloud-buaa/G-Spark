@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.{LauncherBackend, SparkAppHandle}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler._
-import org.apache.spark.scheduler.cluster.ExecutorInfo
+import org.apache.spark.siteDriver.{ExecutorInfo, WorkerOffer}
 
 private case class ReviveOffers()
 
@@ -38,66 +38,70 @@ private case class KillTask(taskId: Long, interruptThread: Boolean)
 
 private case class StopExecutor()
 
+// TODO-lzp: 严格说, 我们应该不会使用到LocalSchedulerBackend
+
 /**
  * Calls to [[LocalSchedulerBackend]] are all serialized through LocalEndpoint. Using an
  * RpcEndpoint makes the calls on [[LocalSchedulerBackend]] asynchronous, which is necessary
- * to prevent deadlock between [[LocalSchedulerBackend]] and the [[TaskSchedulerImpl]].
+ * to prevent deadlock between [[LocalSchedulerBackend]] and the [[GlobalTaskSchedulerImpl]].
  */
 private[spark] class LocalEndpoint(
     override val rpcEnv: RpcEnv,
     userClassPath: Seq[URL],
-    scheduler: TaskSchedulerImpl,
+    scheduler: GlobalTaskSchedulerImpl,
     executorBackend: LocalSchedulerBackend,
     private val totalCores: Int)
   extends ThreadSafeRpcEndpoint with Logging {
 
-  private var freeCores = totalCores
-
-  val localExecutorId = SparkContext.GLOBAL_DRIVER_IDENTIFIER
-  val localExecutorHostname = "localhost"
-
-  private val executor = new Executor(
-    localExecutorId, localExecutorHostname, SparkEnv.get, userClassPath, isLocal = true)
+//  private var freeCores = totalCores
+//
+//  val localExecutorId = SparkContext.GLOBAL_DRIVER_IDENTIFIER
+//  val localExecutorHostname = "localhost"
+//
+//  private val executor = new Executor(
+//    localExecutorId, localExecutorHostname, SparkEnv.get, userClassPath, isLocal = true)
 
   override def receive: PartialFunction[Any, Unit] = {
-    case ReviveOffers =>
-      reviveOffers()
-
-    case StatusUpdate(taskId, state, serializedData) =>
-      scheduler.statusUpdate(taskId, state, serializedData)
-      if (TaskState.isFinished(state)) {
-        freeCores += scheduler.CPUS_PER_TASK
-        reviveOffers()
-      }
-
-    case KillTask(taskId, interruptThread) =>
-      executor.killTask(taskId, interruptThread)
+//    case ReviveOffers =>
+//      reviveOffers()
+//
+//    case StatusUpdate(taskId, state, serializedData) =>
+//      scheduler.statusUpdate(taskId, state, serializedData)
+//      if (TaskState.isFinished(state)) {
+//        freeCores += scheduler.CPUS_PER_TASK
+//        reviveOffers()
+//      }
+//
+//    case KillTask(taskId, interruptThread) =>
+//      executor.killTask(taskId, interruptThread)
+    case _ =>
   }
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case StopExecutor =>
-      executor.stop()
-      context.reply(true)
+//    case StopExecutor =>
+//      executor.stop()
+//      context.reply(true)
+    case _ =>
   }
 
-  def reviveOffers() {
-    val offers = IndexedSeq(new WorkerOffer(localExecutorId, localExecutorHostname, freeCores))
-    for (task <- scheduler.resourceOffers(offers).flatten) {
-      freeCores -= scheduler.CPUS_PER_TASK
-      executor.launchTask(executorBackend, taskId = task.taskId, attemptNumber = task.attemptNumber,
-        task.name, task.serializedTask)
-    }
-  }
+//  def reviveOffers() {
+//    val offers = IndexedSeq(new WorkerOffer(localExecutorId, localExecutorHostname, freeCores))
+//    for (task <- scheduler.resourceOffers(offers).flatten) {
+//      freeCores -= scheduler.CPUS_PER_TASK
+//    executor.launchTask(executorBackend, taskId = task.taskId, attemptNumber = task.attemptNumber,
+//        task.name, task.serializedTask)
+//    }
+//  }
 }
 
 /**
  * Used when running a local version of Spark where the executor, backend, and master all run in
- * the same JVM. It sits behind a [[TaskSchedulerImpl]] and handles launching tasks on a single
- * Executor (created by the [[LocalSchedulerBackend]]) running locally.
+ * the same JVM. It sits behind a [[GlobalTaskSchedulerImpl]] and handles launching tasks on a
+ * single Executor (created by the [[LocalSchedulerBackend]]) running locally.
  */
 private[spark] class LocalSchedulerBackend(
     conf: SparkConf,
-    scheduler: TaskSchedulerImpl,
+    scheduler: GlobalTaskSchedulerImpl,
     val totalCores: Int)
   extends SchedulerBackend with ExecutorBackend with Logging {
 
@@ -122,15 +126,15 @@ private[spark] class LocalSchedulerBackend(
   launcherBackend.connect()
 
   override def start() {
-    val rpcEnv = SparkEnv.get.rpcEnv
-    val executorEndpoint = new LocalEndpoint(rpcEnv, userClassPath, scheduler, this, totalCores)
-    localEndpoint = rpcEnv.setupEndpoint("LocalSchedulerBackendEndpoint", executorEndpoint)
-    listenerBus.post(SparkListenerExecutorAdded(
-      System.currentTimeMillis,
-      executorEndpoint.localExecutorId,
-      new ExecutorInfo(executorEndpoint.localExecutorHostname, totalCores, Map.empty)))
-    launcherBackend.setAppId(appId)
-    launcherBackend.setState(SparkAppHandle.State.RUNNING)
+//    val rpcEnv = SparkEnv.get.rpcEnv
+//    val executorEndpoint = new LocalEndpoint(rpcEnv, userClassPath, scheduler, this, totalCores)
+//    localEndpoint = rpcEnv.setupEndpoint("LocalSchedulerBackendEndpoint", executorEndpoint)
+//    listenerBus.post(SparkListenerExecutorAdded(
+//      System.currentTimeMillis,
+//      executorEndpoint.localExecutorId,
+//      new ExecutorInfo(executorEndpoint.localExecutorHostname, totalCores, Map.empty)))
+//    launcherBackend.setAppId(appId)
+//    launcherBackend.setState(SparkAppHandle.State.RUNNING)
   }
 
   override def stop() {

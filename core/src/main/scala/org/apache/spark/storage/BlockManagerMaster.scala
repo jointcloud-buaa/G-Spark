@@ -50,6 +50,11 @@ class BlockManagerMaster(
     logInfo("Removal of executor " + execId + " requested")
   }
 
+  def removeSiteDriverAsync(sdriverId: String): Unit = {
+    driverEndpoint.ask[Boolean](RemoveSiteDriver(sdriverId))
+    logInfo(s"Removal of site driver $sdriverId requested")
+  }
+
   /**
    * Register the BlockManager's id with the driver. The input BlockManagerId does not contain
    * topology information. This information is obtained from the master and we respond with an

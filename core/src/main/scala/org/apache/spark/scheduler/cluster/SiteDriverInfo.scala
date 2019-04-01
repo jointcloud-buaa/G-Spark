@@ -14,20 +14,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.spark.scheduler.cluster
 
-package org.apache.spark.deploy.sitemaster
+import org.apache.spark.siteDriver.ExecutorInfo
 
-import org.apache.spark.deploy.Command
+// 存储关于SiteDriver的信息, 用于从scheduler传递给SparkListener
+class SiteDriverInfo(
+  val sdriverHost: String,
+  val logUrlMap: Map[String, String]
+) {
 
-private[spark] case class SiteAppDescription(
-  name: String,
-  maxCores: Option[Int],
-  memoryPerExecutorMB: Int,
-  command: Command,  // to start executor
-  // TODO-lzp: how to add eventLogDir
-  coresPerExecutor: Option[Int] = None,
-  initialExecutorLimit: Option[Int] = None,
-  user: String = System.getProperty("user.name", "<unknown>")) {
+  def canEqual(other: Any): Boolean = other.isInstanceOf[ExecutorInfo]
 
-  override def toString: String = s"SiteAppDescription($name)"
+  override def equals(other: Any): Boolean = other match {
+    case that: SiteDriverInfo =>
+      (that canEqual this) &&
+        sdriverHost == that.sdriverHost &&
+        logUrlMap == that.logUrlMap
+    case _ => false
+  }
+
+  override def hashCode(): Int = {
+    val state = Seq(sdriverHost, logUrlMap)
+    state.map(_.hashCode()).foldLeft(0)((a, b) => 31 * a + b)
+  }
+
 }

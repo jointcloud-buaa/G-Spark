@@ -33,7 +33,7 @@ import org.apache.spark._
 import org.apache.spark.executor._
 import org.apache.spark.rdd.RDDOperationScope
 import org.apache.spark.scheduler._
-import org.apache.spark.scheduler.cluster.ExecutorInfo
+import org.apache.spark.siteDriver.ExecutorInfo
 import org.apache.spark.storage._
 
 /**

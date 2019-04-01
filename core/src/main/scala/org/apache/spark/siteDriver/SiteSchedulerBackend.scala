@@ -14,20 +14,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.spark.siteDriver
 
-package org.apache.spark.deploy.sitemaster
+private[spark] trait SiteSchedulerBackend {
+  private val appId = "site-application-" + System.currentTimeMillis
 
-import org.apache.spark.deploy.Command
+  def start(): Unit
+  def stop(): Unit
+  def reviveOffers(): Unit
+  def defaultParallelism(): Int
 
-private[spark] case class SiteAppDescription(
-  name: String,
-  maxCores: Option[Int],
-  memoryPerExecutorMB: Int,
-  command: Command,  // to start executor
-  // TODO-lzp: how to add eventLogDir
-  coresPerExecutor: Option[Int] = None,
-  initialExecutorLimit: Option[Int] = None,
-  user: String = System.getProperty("user.name", "<unknown>")) {
+  def killTask(taskId: Long, executorId: String, interruptThread: Boolean): Unit =
+    throw new UnsupportedOperationException
 
-  override def toString: String = s"SiteAppDescription($name)"
+  def isReady(): Boolean = true
+
+  def siteAppId(): String = appId
+
+  def getSiteDriverLogUrls: Option[Map[String, String]] = None
+
+  def reportClusterReady(): Unit
+
 }

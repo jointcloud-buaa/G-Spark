@@ -510,8 +510,7 @@ private[deploy] class Worker(
     case ReregisterWithSiteMaster =>
       reregisterWithMaster()
 
-      // TODO-lzp: may delete
-    case ApplicationFinished(id) =>
+    case ApplicationFinished(id) =>  // site app id
       finishedApps += id
       maybeCleanupApplication(id)
   }

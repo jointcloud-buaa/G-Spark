@@ -17,7 +17,7 @@
 
 package org.apache.spark
 
-import org.apache.spark.scheduler.TaskSchedulerImpl
+import org.apache.spark.scheduler.GlobalTaskSchedulerImpl
 
 /**
  * Low-level status reporting APIs for monitoring job and stage progress.
@@ -112,7 +112,7 @@ class SparkStatusTracker private[spark] (sc: SparkContext) {
    */
   def getExecutorInfos: Array[SparkExecutorInfo] = {
     val executorIdToRunningTasks: Map[String, Int] =
-      sc.taskScheduler.asInstanceOf[TaskSchedulerImpl].runningTasksByExecutors
+      sc.taskScheduler.asInstanceOf[GlobalTaskSchedulerImpl].runningTasksBySiteDrivers
 
     sc.getExecutorStorageStatus.map { status =>
       val bmId = status.blockManagerId

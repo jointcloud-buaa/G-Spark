@@ -113,7 +113,7 @@ import org.apache.spark.util._
 private[spark]
 class DAGScheduler(
     private[scheduler] val sc: SparkContext,
-    private[scheduler] val taskScheduler: TaskScheduler,
+    private[scheduler] val taskScheduler: GlobalTaskScheduler,
     listenerBus: LiveListenerBus,
     mapOutputTracker: MapOutputTrackerMaster,
     blockManagerMaster: BlockManagerMaster,
@@ -121,7 +121,7 @@ class DAGScheduler(
     clock: Clock = new SystemClock())
   extends Logging {
 
-  def this(sc: SparkContext, taskScheduler: TaskScheduler) = {
+  def this(sc: SparkContext, taskScheduler: GlobalTaskScheduler) = {
     this(
       sc,
       taskScheduler,
@@ -236,6 +236,17 @@ class DAGScheduler(
       BlockManagerHeartbeat(blockManagerId), new RpcTimeout(600 seconds, "BlockManagerHeartbeat"))
   }
 
+  def siteDriverHeartbeatReceived(
+    sdriverId: String,
+    // (taskSubSetId, stageId, stageAttemptId, accumUpdates)
+    accumUpdates: Array[(Long, Int, Int, Seq[AccumulableInfo])],
+    blockManagerId: BlockManagerId): Boolean = {
+    listenerBus.post(SparkListenerSiteDriverMetricsUpdate(sdriverId, accumUpdates))
+    // TODO-lzp: 是否要区分executor/siteDriver发送的块管理器心跳
+    blockManagerMaster.driverEndpoint.askWithRetry[Boolean](
+      BlockManagerHeartbeat(blockManagerId), new RpcTimeout(600 seconds, "BlockManagerHeartbeat"))
+  }
+
   /**
    * Called by TaskScheduler implementation when an executor fails.
    */
@@ -248,6 +259,10 @@ class DAGScheduler(
    */
   def executorAdded(execId: String, host: String): Unit = {
     eventProcessLoop.post(ExecutorAdded(execId, host))
+  }
+
+  def siteDriverAdded(sdriverId: String, host: String): Unit = {
+    eventProcessLoop.post(ExecutorAdded(sdriverId, host))
   }
 
   /**
@@ -1371,6 +1386,11 @@ class DAGScheduler(
     }
   }
 
+  // TODO-lzp: handle site driver added, because no failedEpoch for site driver
+  private[scheduler] def handleSiteDriverAdded(sdriverId: String, host: String): Unit = {
+    logInfo("#lizp#: handle site driver added. Do nothing now")
+  }
+
   private[scheduler] def handleStageCancellation(stageId: Int) {
     stageIdToStage.get(stageId) match {
       case Some(stage) =>
@@ -1650,12 +1670,18 @@ private[scheduler] class DAGSchedulerEventProcessLoop(dagScheduler: DAGScheduler
     case ExecutorAdded(execId, host) =>
       dagScheduler.handleExecutorAdded(execId, host)
 
+    case SiteDriverAdded(sdriverId, host) =>
+      dagScheduler.handleSiteDriverAdded(sdriverId, host)
+
     case ExecutorLost(execId, reason) =>
       val filesLost = reason match {
-        case SlaveLost(_, true) => true
+        case ExecutorSlaveLost(_, true) => true
         case _ => false
       }
       dagScheduler.handleExecutorLost(execId, filesLost)
+
+      // TODO-lzp: handle SiteDriver
+    case SiteDriverLost(execId, reason) =>
 
     case BeginEvent(task, taskInfo) =>
       dagScheduler.handleBeginEvent(task, taskInfo)

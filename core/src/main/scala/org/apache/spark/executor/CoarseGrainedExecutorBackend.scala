@@ -137,7 +137,7 @@ private[spark] class CoarseGrainedExecutorBackend(
   }
 
   override def statusUpdate(taskId: Long, state: TaskState, data: ByteBuffer) {
-    val msg = StatusUpdate(executorId, taskId, state, data)
+    val msg = ExecutorStatusUpdate(executorId, taskId, state, data)
     driver match {
       case Some(driverRef) => driverRef.send(msg)
       case None => logWarning(s"Drop $msg because has not yet connected to driver")
@@ -201,14 +201,14 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
         clientMode = true)
       val driver = fetcher.setupEndpointRefByURI(driverUrl)
       val cfg = driver.askWithRetry[SparkAppConfig](RetrieveSparkAppConfig)
-      val props = cfg.sparkProperties ++ Seq[(String, String)](("spark.app.id", appId))
+      val props = cfg.sparkProperties ++ Seq[(String, String)](("spark.siteApp.id", appId))
       fetcher.shutdown()
 
       // Create SparkEnv using properties we fetched from the driver.
       val driverConf = new SparkConf()
       for ((key, value) <- props) {
         // this is required for SSL in standalone mode
-        if (SparkConf.isExecutorStartupConf(key)) {
+        if (SparkConf.isComponetStartupConf(key)) {
           driverConf.setIfMissing(key, value)
         } else {
           driverConf.set(key, value)
@@ -218,6 +218,11 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
         logInfo("Will periodically update credentials from: " +
           driverConf.get("spark.yarn.credentials.file"))
         SparkHadoopUtil.get.startCredentialUpdater(driverConf)
+      }
+
+      // TODO-lzp: delete it
+      if (driverConf.getBoolean("spark.logConf", false)) {
+        logInfo(s"Spark Configuration:\n" + driverConf.toDebugString)
       }
 
       val env = SparkEnv.createExecutorEnv(

@@ -26,17 +26,22 @@ import org.apache.spark.deploy.sitemaster.SiteAppState.SiteAppState
 import org.apache.spark.rpc.RpcEndpointRef
 
 private[deploy] class SiteAppInfo(
-                                 val startTime: Long,
-                                 val id: String,
-                                 val desc: SiteAppDescription,
-                                 val submitDate: Date,
-                                 val driver: RpcEndpointRef
-                                 ) extends Serializable {
+  val startTime: Long,
+  val id: String,
+  val desc: SiteAppDescription,
+  val submitDate: Date,
+  val driver: RpcEndpointRef,
+  defaultCores: Int
+) extends Serializable {
+
   @transient var state: SiteAppState = _
   @transient var executors: mutable.HashMap[Int, ExecutorDesc] = _
   @transient var removedExecutors: ArrayBuffer[ExecutorDesc] = _
   @transient var coresGranted: Int = 0
+  @transient var endTime: Long = _
   @transient var appSource: SiteAppSource = _
+
+  @transient private[sitemaster] var executorLimit: Int = _
 
   @transient private var nextExecutorId: Int = 0
 
@@ -49,6 +54,27 @@ private[deploy] class SiteAppInfo(
     appSource = new SiteAppSource(this)
     nextExecutorId = 0
     removedExecutors = new ArrayBuffer[ExecutorDesc]()
+    executorLimit = desc.initialExecutorLimit.getOrElse(Integer.MAX_VALUE)
+  }
+
+  private val requestedCores = desc.maxCores.getOrElse(defaultCores)
+
+  private[sitemaster] def coresLeft: Int = requestedCores - coresGranted
+
+  private var _retryCount = 0
+
+  // TODO-lzp: 感觉retryCount并不能阻止, executor启动无限个, 只要其exit
+  private[sitemaster] def retryCount = _retryCount
+
+  private[sitemaster] def incrementRetryCount() = {
+    _retryCount += 1
+    _retryCount
+  }
+
+  private[sitemaster] def resetRetryCount(): Unit = _retryCount = 0
+
+  private[sitemaster] def isFinished: Boolean = {
+    state != SiteAppState.WAITING && state != SiteAppState.RUNNING
   }
 
   private def newExecutorId(useID: Option[Int] = None): Int = {
@@ -64,9 +90,9 @@ private[deploy] class SiteAppInfo(
   }
 
   private[sitemaster] def addExecutor(
-                                   worker: WorkerInfo,
-                                   cores: Int,
-                                   useID: Option[Int] = None): ExecutorDesc = {
+    worker: WorkerInfo,
+    cores: Int,
+    useID: Option[Int] = None): ExecutorDesc = {
     val exec = new ExecutorDesc(newExecutorId(useID), this, worker, cores, desc.memoryPerExecutorMB)
     executors(exec.id) = exec
     coresGranted += cores
@@ -79,5 +105,12 @@ private[deploy] class SiteAppInfo(
       executors -= exec.id
       coresGranted -= exec.cores
     }
+  }
+
+  private[deploy] def getExecutorLimit: Int = executorLimit
+
+  private[sitemaster] def markFinished(endState: SiteAppState.Value) {
+    state = endState
+    endTime = System.currentTimeMillis()
   }
 }

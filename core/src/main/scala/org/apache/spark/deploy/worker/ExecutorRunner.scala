@@ -25,8 +25,9 @@ import scala.collection.JavaConverters._
 import com.google.common.io.Files
 
 import org.apache.spark.{SecurityManager, SparkConf}
-import org.apache.spark.deploy.{ApplicationDescription, CommandUtils, ExecutorState}
+import org.apache.spark.deploy.{CommandUtils, ExecutorState}
 import org.apache.spark.deploy.DeployMessages.ExecutorStateChanged
+import org.apache.spark.deploy.sitemaster.SiteAppDescription
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.util.{ShutdownHookManager, Utils}
@@ -39,7 +40,7 @@ import org.apache.spark.util.logging.FileAppender
 private[deploy] class ExecutorRunner(
     val siteAppId: String,
     val execId: Int,
-    val appDesc: ApplicationDescription,
+    val appDesc: SiteAppDescription,
     val cores: Int,
     val memory: Int,
     val worker: RpcEndpointRef,
@@ -132,7 +133,7 @@ private[deploy] class ExecutorRunner(
     case "{{EXECUTOR_ID}}" => execId.toString
     case "{{HOSTNAME}}" => host
     case "{{CORES}}" => cores.toString
-    case "{{SITE_APP_ID}}" => siteAppId
+    case "{{APP_ID}}" => siteAppId
     case other => other
   }
 

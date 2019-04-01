@@ -27,8 +27,7 @@ import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Random, Success}
 import scala.util.control.NonFatal
 
-import org.apache.spark.SecurityManager
-import org.apache.spark.SparkConf
+import org.apache.spark.{SecurityManager, SparkConf, SparkException}
 import org.apache.spark.deploy.DeployMessages._
 import org.apache.spark.deploy.ExecutorState
 import org.apache.spark.deploy.globalmaster.{GlobalDriverState, GlobalMaster, SiteDriverState}
@@ -72,9 +71,13 @@ private[deploy] class SiteMaster(
 
   private val HEARTBEAT_MILLIS = conf.getLong("spark.siteMaster.timeout", 60) * 1000 / 4
 
+  private val RETAINED_SITE_APPLICATIONS = conf.getInt("spark.deploy.retainedSiteApps", 200)
+  private val RETAINED_SITE_DRIVERS = conf.getInt("spark.deploy.retainedSiteDrivers", 200)
+
   private val WORKER_TIMEOUT_MS = conf.getLong("spark.worker.timeout", 60) * 1000
   private val REAPER_ITERATIONS = conf.getInt("spark.dead.worker.persistence", 15)
   private val RECOVERY_MODE = conf.get("spark.deploy.siteMaster.recoveryMode", "NONE")
+  private val MAX_EXECUTOR_RETRIES = conf.getInt("spark.deploy.maxExecutorRetries", 10)
 
   private val INITIAL_REGISTRATION_RETRIES = 6
   private val TOTAL_REGISTRATION_RETRIES = INITIAL_REGISTRATION_RETRIES + 10
@@ -107,6 +110,7 @@ private[deploy] class SiteMaster(
   private val endpointToSiteApp = new HashMap[RpcEndpointRef, SiteAppInfo]
   private val addressToSiteApp = new HashMap[RpcAddress, SiteAppInfo]
   private val waitingSiteApps = new ArrayBuffer[SiteAppInfo]
+  // TODO-lzp: 唯一的用户就是在请求SiteMasterState时用, 感觉可以删除
   private val completedSiteApps = new ArrayBuffer[SiteAppInfo]
   private var nextSiteAppNumber = 0
 
@@ -117,7 +121,8 @@ private[deploy] class SiteMaster(
   private var connected = false
 
   private var siteMasterWebUiUrl: String = ""
-  private var siteMasterUrl = RpcEndpointAddress(rpcEnv.address, endpointName).toString
+  private var siteMasterUrl = rpcEnv.address.toSparkURL
+  private var siteMasterUrlWithEndpoint = RpcEndpointAddress(rpcEnv.address, endpointName).toString
 
   private val siteMasterId = generateSiteMasterId()
 
@@ -126,7 +131,7 @@ private[deploy] class SiteMaster(
       assert(sys.props.contains("spark.test.home"), "spark.test.home is not set")
       new File(sys.props("spark.test.home"))
     } else {
-      new File(sys.env.get("SPARK_HOME").getOrElse("."))
+      new File(sys.env.getOrElse("SPARK_HOME", "."))
     }
 
   var workDir: File = _
@@ -136,6 +141,7 @@ private[deploy] class SiteMaster(
   val siteDrivers = new HashMap[String, SiteDriverRunner]  // fullId
   val finishedSiteDrivers = new LinkedHashMap[String, SiteDriverRunner]
 
+  //                               appId  -> executor dir
   val appDirectories = new HashMap[String, Seq[String]]
   val finishedApps = new HashSet[String]
 
@@ -154,6 +160,7 @@ private[deploy] class SiteMaster(
   private var connectionAttemptCount = 0
 
   private val metricsSystem = MetricsSystem.createMetricsSystem("siteMaster", conf, securityMgr)
+  private val siteAppMetricsSystem = MetricsSystem.createMetricsSystem("siteApp", conf, securityMgr)
   private val siteMasterSource = new SiteMasterSource(this)
 
   private var registerGlobalMasterFutures: Array[JFuture[_]] = _
@@ -177,6 +184,12 @@ private[deploy] class SiteMaster(
   private var leaderElectionAgent: LeaderElectionAgent = _
   private var recoveryCompletionTask: JScheduledFuture[_] = _
   private var checkForWorkerTimeOutTask: JScheduledFuture[_] = _
+
+  // Default maxCores for applications that don't specify it (i.e. pass Int.MaxValue)
+  private val defaultCores = conf.getInt("spark.deploy.siteMaster.defaultCores", Int.MaxValue)
+  if (defaultCores < 1) {
+    throw new SparkException("spark.deploy.siteMaster.defaultCores must be positive")
+  }
 
   // 在cluster中为siteApp分配executor时, 是否默认扩散策略
   private val spreadOutApps = conf.getBoolean("spark.deploy.siteMaster.spreadOut", true)
@@ -219,7 +232,10 @@ private[deploy] class SiteMaster(
 
     metricsSystem.registerSource(siteMasterSource)
     metricsSystem.start()
+    siteAppMetricsSystem.start()
     metricsSystem.getServletHandlers.foreach(webUi.attachHandler)
+
+    // TODO-lzp: about the ui
 
     val serializer = new JavaSerializer(conf)
     val (persistenceEngine_, leaderElectionAgent_) = RECOVERY_MODE match {
@@ -311,7 +327,7 @@ private[deploy] class SiteMaster(
           logWarning("Worker state from unknown worker: " + workerId)
       }
 
-    case LaunchSiteDriver(gmUrl, appId, sdriverId, appDesc, cores_, memory_) => // TODO-lzp
+    case LaunchSiteDriver(gmUrl, appId, sdriverId, appDesc, cores_, memory_) =>
       if (gmUrl != activeGlobalMasterUrl) {
         logWarning("Invalid Global Master (" + gmUrl + ") attempted to launch sitedriver.")
       } else {
@@ -324,6 +340,7 @@ private[deploy] class SiteMaster(
             throw new IOException("Failed to create directory " + siteDriverDir)
           }
 
+          // ${spark.local.dir}/spark-uuid/executor-uuid/
           val appLocalDirs = appDirectories.getOrElse(appId,
             Utils.getOrCreateLocalRootDirs(conf).map { dir =>
               val appDir = Utils.createDirectory(dir, namePrefix = "site-driver")
@@ -344,7 +361,7 @@ private[deploy] class SiteMaster(
             publicAddress,
             sparkHome,
             siteDriverDir,
-            siteMasterUrl,
+            siteMasterUrlWithEndpoint,
             conf,
             appLocalDirs,
             SiteDriverState.RUNNING
@@ -390,7 +407,7 @@ private[deploy] class SiteMaster(
         sparkHome,
         gdriverDesc.copy(command = Utils.maybeUpdateSSLSettings(gdriverDesc.command, conf)),
         self,
-        siteMasterUrl,
+        siteMasterUrlWithEndpoint,
         securityMgr
       )
       globalDrivers(gdriverId) = gdriver
@@ -415,8 +432,53 @@ private[deploy] class SiteMaster(
     case globalDriverStateChanged @ GlobalDriverStateChanged(gdId, state_, exception) =>
       handleGlobalDriverStateChanged(globalDriverStateChanged)
 
-    // TODO-lzp:
-    case ExecutorStateChanged =>
+    case ExecutorStateChanged(siteAppId, execId, state, msg, exitStatus) =>
+      val execOption = idToSiteApp.get(siteAppId).flatMap(app => app.executors.get(execId))
+      execOption match {
+        case Some(exec) =>
+          val appInfo = idToSiteApp(siteAppId)
+          val oldState = exec.state  // 旧的状态
+          exec.state = state  // 更新exec的状态
+
+          // 在为应用调度资源时, 向应用的executors中加入execDesc, 其初始状态为LAUNCHING
+          if (state == ExecutorState.RUNNING) {
+            // 即Running前必须是launching
+            assert(oldState == ExecutorState.LAUNCHING,
+              s"executor $execId state transfer from $oldState to RUNNING is illegal")
+            appInfo.resetRetryCount()
+          }
+
+          exec.siteApp.driver.send(ExecutorUpdated(execId, state, msg, exitStatus, false))
+
+          if (ExecutorState.isFinished(state)) {  // executor状态已结束
+            // Remove this executor from the worker and app
+            logInfo(s"Removing executor ${exec.fullId} because it is $state")
+            // If an application has already finished, preserve its
+            // state to display its information properly on the UI
+            if (!appInfo.isFinished) {  // 如果应用未结束
+              appInfo.removeExecutor(exec)
+            }
+            exec.worker.removeExecutor(exec)
+
+            val normalExit = exitStatus.contains(0)  // 正常结束
+            // Only retry certain number of times so we don't go into an infinite loop.
+            // Important note: this code path is not exercised by tests, so be very careful when
+            // changing this `if` condition.
+            if (!normalExit
+              && appInfo.incrementRetryCount() >= MAX_EXECUTOR_RETRIES
+              && MAX_EXECUTOR_RETRIES >= 0) { // < 0 disables this application-killing path
+              val execs = appInfo.executors.values
+              if (!execs.exists(_.state == ExecutorState.RUNNING)) {
+                logError(s"Site Application ${appInfo.desc.name} with ID ${appInfo.id} failed " +
+                  s"${appInfo.retryCount} times; removing it")
+                removeSiteApp(appInfo, SiteAppState.FAILED)
+              }
+            }
+          }
+          schedule()
+        case None =>
+          logWarning(s"Got status update for unknown executor $siteAppId/$execId")
+      }
 
     // gm -> sm: GlobalMasterChanged, when gm recovery
     case GlobalMasterChanged(gmRef, gmWebUiUrl) =>
@@ -464,16 +526,17 @@ private[deploy] class SiteMaster(
       }
       maybeCleanupApplication(id)
 
-    case RegisterSiteApplication(siteAppDescription, sdriver) => // TODO-lzp
+    case RegisterSiteApplication(siteAppDescription, sdriver) =>
       if (state == SiteMasterInState.STANDBY) {
 
       } else {
         logInfo("Registering site app " + siteAppDescription.name)
         val siteApp = createSiteApplication(siteAppDescription, sdriver)
-        registerSiteApplication(siteApp)
-        logInfo("Registered site app " + siteAppDescription.name + " with ID " + siteApp.id)
+        registerSiteApp(siteApp)
+        logInfo(s"Registered site app ${siteAppDescription.name} with ID: ${siteApp.id}")
         persistenceEngine.addSiteApp(siteApp)
-        sdriver.send(RegisteredApplication(siteApp.id, self))
+        sdriver.send(RegisteredSiteApplication(siteApp.id, self))
+        schedule()
       }
 
     case CheckForWorkerTimeOut =>
@@ -526,9 +589,27 @@ private[deploy] class SiteMaster(
       context.reply(BoundPortsResponse(port, webUi.boundPort))
   }
 
-  // TODO-lzp
   private def handleSiteDriverStateChanged(changed: SiteDriverStateChanged): Unit = {
-
+    sendToGlobalMaster(changed)
+    val state = changed.state
+    if (SiteDriverState.isFinished(state)) {
+      val appId = changed.appId
+      val fullId = s"$appId/${changed.sdriverId}"
+      val msg = changed.message.map(m => s" message $m ").getOrElse("")
+      val exitStatus = changed.exitStatus.map(es => s" exitStatus $es").getOrElse("")
+      siteDrivers.get(fullId) match {
+        case Some(sdriver) =>
+          logInfo(s"SiteDriver $fullId finished with state $state$msg$exitStatus")
+          siteDrivers -= fullId
+          finishedSiteDrivers(fullId) = sdriver
+          trimFinishedSiteDriversIfNecessary()
+          coresUsed -= sdriver.cores
+          memoryUsed -= sdriver.memory
+        case None =>
+          logInfo(s"Unknown SiteDriver $fullId finished with state $state$msg$exitStatus")
+      }
+      maybeCleanupApplication(appId)
+    }
   }
 
   // 此时, GlobalDriver已经结束, 无论因为什么原因. 此处根据不同的结束原因, 在SiteMaster上记录下日志
@@ -539,7 +620,7 @@ private[deploy] class SiteMaster(
     state match {
       case GlobalDriverState.ERROR =>
         logWarning(s"Global Driver $gdriverId failed with unrecoverable exception: " +
-                     s"${exception.get}")
+          s"${exception.get}")
       case GlobalDriverState.FAILED =>
         logWarning(s"Global Driver $gdriverId exited with failure")
       case GlobalDriverState.FINISHED =>
@@ -557,9 +638,147 @@ private[deploy] class SiteMaster(
     coresUsed -= gdriver.gdriverDesc.cores
   }
 
-  // TODO-lzp
   private def schedule(): Unit = {
+    if (state != SiteMasterInState.ALIVE) return
+    startExecutorsOnWorkers()
+  }
 
+  /**
+   * Schedule and launch executors on workers
+   */
+  private def startExecutorsOnWorkers(): Unit = {
+    // Right now this is a very simple FIFO scheduler. We keep trying to fit in the first app
+    // in the queue, then the second app, etc.
+    for (siteApp <- waitingSiteApps if siteApp.coresLeft > 0) {
+      val coresPerExecutor: Option[Int] = siteApp.desc.coresPerExecutor
+      // Filter out workers that don't have enough resources to launch an executor
+      val usableWorkers = workers.toArray.filter(_.state == WorkerState.ALIVE)
+        .filter(worker => worker.memoryFree >= siteApp.desc.memoryPerExecutorMB &&
+          worker.coresFree >= coresPerExecutor.getOrElse(1))
+        .sortBy(_.coresFree).reverse
+      val assignedCores = scheduleExecutorsOnWorkers(siteApp, usableWorkers, spreadOutApps)
+
+      // Now that we've decided how many cores to allocate on each worker, let's allocate them
+      for (pos <- usableWorkers.indices if assignedCores(pos) > 0) {
+        allocateWorkerResourceToExecutors(
+          siteApp, assignedCores(pos), coresPerExecutor, usableWorkers(pos))
+      }
+    }
+  }
+
+  /**
+   * Allocate a worker's resources to one or more executors.
+   *
+   * @param siteApp              the info of the application which the executors belong to
+   * @param assignedCores    number of cores on this worker for this application
+   * @param coresPerExecutor number of cores per executor
+   * @param worker           the worker info
+   */
+  private def allocateWorkerResourceToExecutors(
+    siteApp: SiteAppInfo,
+    assignedCores: Int,
+    coresPerExecutor: Option[Int],
+    worker: WorkerInfo): Unit = {
+    // If the number of cores per executor is specified, we divide the cores assigned
+    // to this worker evenly among the executors with no remainder.
+    // Otherwise, we launch a single executor that grabs all the assignedCores on this worker.
+    val numExecutors = coresPerExecutor.map {assignedCores / _}.getOrElse(1)
+    val coresToAssign = coresPerExecutor.getOrElse(assignedCores)
+    for (i <- 1 to numExecutors) {
+      val exec = siteApp.addExecutor(worker, coresToAssign)
+      launchExecutor(worker, exec)
+      siteApp.state = SiteAppState.RUNNING
+    }
+  }
+
+  /**
+   * Schedule executors to be launched on the workers.
+   * Returns an array containing number of cores assigned to each worker.
+   *
+   * There are two modes of launching executors. The first attempts to spread out an application's
+   * executors on as many workers as possible, while the second does the opposite (i.e. launch them
+   * on as few workers as possible). The former is usually better for data locality purposes and is
+   * the default.
+   * 载入executor有两种模式. 每一种尝试将一个应用的所有executors扩散到尽可能多的workers上. 第二种则相反.
+   * 前者更利于数据本地性, 默认.
+   *
+   * The number of cores assigned to each executor is configurable. When this is explicitly set,
+   * multiple executors from the same application may be launched on the same worker if the worker
+   * has enough cores and memory. Otherwise, each executor grabs all the cores available on the
+   * worker by default, in which case only one executor may be launched on each worker.
+   * 赋予给每个executor的cpu核心数是可配置的. 当这个明确设置时, 相同应用的多个executors是有可能在同一个
+   * worker上载入的, 只要这个worker有足够的cpu和内存. 否则, 每个executor将默认占用worker上所有可用的核心数,
+   * 这种情况下, 每个worker上将只有一个executor.
+   *
+   * It is important to allocate coresPerExecutor on each worker at a time (instead of 1 core
+   * at a time). Consider the following example: cluster has 4 workers with 16 cores each.
+   * User requests 3 executors (spark.cores.max = 48, spark.executor.cores = 16). If 1 core is
+   * allocated at a time, 12 cores from each worker would be assigned to each executor.
+   * Since 12 < 16, no executors would launch [SPARK-8881].
+   */
+  private def scheduleExecutorsOnWorkers(
+    app: SiteAppInfo,
+    usableWorkers: Array[WorkerInfo],
+    spreadOutApps: Boolean): Array[Int] = {
+    val coresPerExecutor = app.desc.coresPerExecutor
+    val minCoresPerExecutor = coresPerExecutor.getOrElse(1)
+    val oneExecutorPerWorker = coresPerExecutor.isEmpty
+    val memoryPerExecutor = app.desc.memoryPerExecutorMB
+    val numUsable = usableWorkers.length
+    val assignedCores = new Array[Int](numUsable) // Number of cores to give to each worker
+    val assignedExecutors = new Array[Int](numUsable) // Number of new executors on each worker
+    var coresToAssign = math.min(app.coresLeft, usableWorkers.map(_.coresFree).sum)
+
+    /** Return whether the specified worker can launch an executor for this app. */
+    def canLaunchExecutor(pos: Int): Boolean = {
+      val keepScheduling = coresToAssign >= minCoresPerExecutor
+      val enoughCores = usableWorkers(pos).coresFree - assignedCores(pos) >= minCoresPerExecutor
+
+      // If we allow multiple executors per worker, then we can always launch new executors.
+      // Otherwise, if there is already an executor on this worker, just give it more cores.
+      val launchingNewExecutor = !oneExecutorPerWorker || assignedExecutors(pos) == 0
+      if (launchingNewExecutor) {
+        val assignedMemory = assignedExecutors(pos) * memoryPerExecutor
+        val enoughMemory = usableWorkers(pos).memoryFree - assignedMemory >= memoryPerExecutor
+        val underLimit = assignedExecutors.sum + app.executors.size < app.executorLimit
+        keepScheduling && enoughCores && enoughMemory && underLimit
+      } else {
+        // We're adding cores to an existing executor, so no need
+        // to check memory and executor limits
+        keepScheduling && enoughCores
+      }
+    }
+
+    // Keep launching executors until no more workers can accommodate any
+    // more executors, or if we have reached this application's limits
+    var freeWorkers = (0 until numUsable).filter(canLaunchExecutor)
+    while (freeWorkers.nonEmpty) {
+      freeWorkers.foreach { pos =>
+        var keepScheduling = true
+        while (keepScheduling && canLaunchExecutor(pos)) {
+          coresToAssign -= minCoresPerExecutor
+          assignedCores(pos) += minCoresPerExecutor
+
+          // If we are launching one executor per worker, then every iteration assigns 1 core
+          // to the executor. Otherwise, every iteration assigns cores to a new executor.
+          if (oneExecutorPerWorker) {
+            assignedExecutors(pos) = 1
+          } else {
+            assignedExecutors(pos) += 1
+          }
+
+          // Spreading out an application means spreading out its executors across as
+          // many workers as possible. If we are not spreading out, then we should keep
+          // scheduling executors on this worker until we use all of its resources.
+          // Otherwise, just move on to the next worker.
+          if (spreadOutApps) {
+            keepScheduling = false
+          }
+        }
+      }
+      freeWorkers = freeWorkers.filter(canLaunchExecutor)
+    }
+    assignedCores
   }
 
   private def maybeCleanupApplication(appId: String): Unit = {
@@ -731,8 +950,9 @@ private[deploy] class SiteMaster(
   def createSiteApplication(desc: SiteAppDescription, driver: RpcEndpointRef): SiteAppInfo = {
     val now = System.currentTimeMillis()
     val date = new Date(now)
+    // TODO-lzp: why we need a site app Id, can we replace it with sdriverId
     val siteAppId = newSiteAppId(date)
-    new SiteAppInfo(now, siteAppId, desc, date, driver)
+    new SiteAppInfo(now, siteAppId, desc, date, driver, defaultCores)
   }
 
   private def newSiteAppId(date: Date): String = {
@@ -741,9 +961,22 @@ private[deploy] class SiteMaster(
     siteAppId
   }
 
-  // TODO-lzp
-  private def registerSiteApplication(siteApp: SiteAppInfo): Unit = {
-
+  // TODO-lzp: 这里可能存在一个非常大的bug, 即一个SiteMaster只能启动一个SiteDriver???
+  private def registerSiteApp(siteApp: SiteAppInfo): Unit = {
+    val appAddr = siteApp.driver.address
+    // TODO-lzp: 如何解除这个限制, 因为每个应用都至少要在SiteMaster上启动一个SiteDriver, 就一定会有
+    // 一个SiteApp, 这里的限制会限制 , 其实多集群只能跑一个应用
+    if (addressToSiteApp.contains(appAddr)) {
+      logInfo("Attempt to re-register site application at same address")
+      return
+    }
+    siteAppMetricsSystem.registerSource(siteApp.appSource)
+    siteApps += siteApp
+    idToSiteApp(siteApp.id) = siteApp
+    endpointToSiteApp(siteApp.driver) = siteApp
+    addressToSiteApp(appAddr) = siteApp
+    waitingSiteApps += siteApp
+    // TODO-lzp: 逆向代理的处理
   }
 
   private def handleRegisterResponse(msg: RegisterSiteMasterResponse): Unit = synchronized {
@@ -818,152 +1051,55 @@ private[deploy] class SiteMaster(
     logInfo("Recovery complete - resuming operation")
   }
 
-  /**
-   * Schedule executors to be launched on the workers.
-   * Returns an array containing number of cores assigned to each worker.
-   *
-   * There are two modes of launching executors. The first attempts to spread out an application's
-   * executors on as many workers as possible, while the second does the opposite (i.e. launch them
-   * on as few workers as possible). The former is usually better for data locality purposes and is
-   * the default.
-   *
-   * The number of cores assigned to each executor is configurable. When this is explicitly set,
-   * multiple executors from the same application may be launched on the same worker if the worker
-   * has enough cores and memory. Otherwise, each executor grabs all the cores available on the
-   * worker by default, in which case only one executor may be launched on each worker.
-   *
-   * It is important to allocate coresPerExecutor on each worker at a time (instead of 1 core
-   * at a time). Consider the following example: cluster has 4 workers with 16 cores each.
-   * User requests 3 executors (spark.cores.max = 48, spark.executor.cores = 16). If 1 core is
-   * allocated at a time, 12 cores from each worker would be assigned to each executor.
-   * Since 12 < 16, no executors would launch [SPARK-8881].
-   */
-  //  private def scheduleExecutorsOnWorkers(
-  //                                          app: ApplicationInfo,
-  //                                          usableWorkers: Array[WorkerInfo],
-  //                                          spreadOutApps: Boolean): Array[Int] = {
-  //    val coresPerExecutor = app.desc.coresPerExecutor
-  //    val minCoresPerExecutor = coresPerExecutor.getOrElse(1)
-  //    val oneExecutorPerWorker = coresPerExecutor.isEmpty
-  //    val memoryPerExecutor = app.desc.memoryPerExecutorMB
-  //    val numUsable = usableWorkers.length
-  //    val assignedCores = new Array[Int](numUsable) // Number of cores to give to each worker
-  //    val assignedExecutors = new Array[Int](numUsable) // Number of new executors on each worker
-  //    var coresToAssign = math.min(app.coresLeft, usableWorkers.map(_.coresFree).sum)
-  //
-  //    /** Return whether the specified worker can launch an executor for this app. */
-  //    def canLaunchExecutor(pos: Int): Boolean = {
-  //      val keepScheduling = coresToAssign >= minCoresPerExecutor
-  //      val enoughCores = usableWorkers(pos).coresFree - assignedCores(pos) >= minCoresPerExecutor
-  //
-  //      // If we allow multiple executors per worker, then we can always launch new executors.
-  //      // Otherwise, if there is already an executor on this worker, just give it more cores.
-  //      val launchingNewExecutor = !oneExecutorPerWorker || assignedExecutors(pos) == 0
-  //      if (launchingNewExecutor) {
-  //        val assignedMemory = assignedExecutors(pos) * memoryPerExecutor
-  //        val enoughMemory = usableWorkers(pos).memoryFree - assignedMemory >= memoryPerExecutor
-  //        val underLimit = assignedExecutors.sum + app.executors.size < app.executorLimit
-  //        keepScheduling && enoughCores && enoughMemory && underLimit
-  //      } else {
-  //        // We're adding cores to an existing executor, so no need
-  //        // to check memory and executor limits
-  //        keepScheduling && enoughCores
-  //      }
-  //    }
-  //
-  //    // Keep launching executors until no more workers can accommodate any
-  //    // more executors, or if we have reached this application's limits
-  //    var freeWorkers = (0 until numUsable).filter(canLaunchExecutor)
-  //    while (freeWorkers.nonEmpty) {
-  //      freeWorkers.foreach { pos =>
-  //        var keepScheduling = true
-  //        while (keepScheduling && canLaunchExecutor(pos)) {
-  //          coresToAssign -= minCoresPerExecutor
-  //          assignedCores(pos) += minCoresPerExecutor
-  //
-  //          // If we are launching one executor per worker, then every iteration assigns 1 core
-  //          // to the executor. Otherwise, every iteration assigns cores to a new executor.
-  //          if (oneExecutorPerWorker) {
-  //            assignedExecutors(pos) = 1
-  //          } else {
-  //            assignedExecutors(pos) += 1
-  //          }
-  //
-  //          // Spreading out an application means spreading out its executors across as
-  //          // many workers as possible. If we are not spreading out, then we should keep
-  //          // scheduling executors on this worker until we use all of its resources.
-  //          // Otherwise, just move on to the next worker.
-  //          if (spreadOutApps) {
-  //            keepScheduling = false
-  //          }
-  //        }
-  //      }
-  //      freeWorkers = freeWorkers.filter(canLaunchExecutor)
-  //    }
-  //    assignedCores
-  //  }
-
-  /**
-   * Schedule and launch executors on workers
-   */
-  //  private def startExecutorsOnWorkers(): Unit = {
-  //    // Right now this is a very simple FIFO scheduler. We keep trying to fit in the first app
-  //    // in the queue, then the second app, etc.
-  //    for (app <- waitingApps if app.coresLeft > 0) {
-  //      val coresPerExecutor: Option[Int] = app.desc.coresPerExecutor
-  //      // Filter out workers that don't have enough resources to launch an executor
-  //      val usableWorkers = workers.toArray.filter(_.state == WorkerState.ALIVE)
-  //        .filter(worker => worker.memoryFree >= app.desc.memoryPerExecutorMB &&
-  //          worker.coresFree >= coresPerExecutor.getOrElse(1))
-  //        .sortBy(_.coresFree).reverse
-  //      val assignedCores = scheduleExecutorsOnWorkers(app, usableWorkers, spreadOutApps)
-  //
-  //      // Now that we've decided how many cores to allocate on each worker, let's allocate them
-  //      for (pos <- 0 until usableWorkers.length if assignedCores(pos) > 0) {
-  //        allocateWorkerResourceToExecutors(
-  //          app, assignedCores(pos), coresPerExecutor, usableWorkers(pos))
-  //      }
-  //    }
-  //  }
-
-  //  /**
-  //   * Allocate a worker's resources to one or more executors.
-  //   * @param app the info of the application which the executors belong to
-  //   * @param assignedCores number of cores on this worker for this application
-  //   * @param coresPerExecutor number of cores per executor
-  //   * @param worker the worker info
-  //   */
-  //  private def allocateWorkerResourceToExecutors(
-  //                                                 app: ApplicationInfo,
-  //                                                 assignedCores: Int,
-  //                                                 coresPerExecutor: Option[Int],
-  //                                                 worker: WorkerInfo): Unit = {
-  //    // If the number of cores per executor is specified, we divide the cores assigned
-  //    // to this worker evenly among the executors with no remainder.
-  //    // Otherwise, we launch a single executor that grabs all the assignedCores on this worker.
-  //    val numExecutors = coresPerExecutor.map { assignedCores / _ }.getOrElse(1)
-  //    val coresToAssign = coresPerExecutor.getOrElse(assignedCores)
-  //    for (i <- 1 to numExecutors) {
-  //      val exec = app.addExecutor(worker, coresToAssign)
-  //      launchExecutor(worker, exec)
-  //      app.state = ApplicationState.RUNNING
-  //    }
-  //  }
-
-  // TODO-lzp
   private def launchExecutor(worker: WorkerInfo, exec: ExecutorDesc): Unit = {
     logInfo("Launching executor " + exec.fullId + " on worker " + worker.id)
     worker.addExecutor(exec)
-
+    worker.endpoint.send(LaunchExecutor(
+      siteMasterUrl, exec.siteApp.id, exec.id, exec.siteApp.desc, exec.cores, exec.memory
+    ))
+    exec.siteApp.driver.send(
+      ExecutorAdded(exec.id, worker.id, worker.hostPort, exec.cores, exec.memory)
+    )
   }
 
   private def finishSiteApp(siteApp: SiteAppInfo): Unit = {
     removeSiteApp(siteApp, SiteAppState.FINISHED)
   }
 
-  // TODO-lzp
   private def removeSiteApp(siteApp: SiteAppInfo, state: SiteAppState): Unit = {
+    if (siteApps.contains(siteApp)) {
+      logInfo(s"Removing siteApp ${siteApp.id}")
+      siteApps -= siteApp
+      idToSiteApp -= siteApp.id
+      endpointToSiteApp -= siteApp.driver
+      addressToSiteApp -= siteApp.driver.address
 
+      // TODO-lzp: 处理逆向代理, 在移除应用时
+
+      if (completedSiteApps.size >= RETAINED_SITE_APPLICATIONS) {
+        val toRemove = math.max(RETAINED_SITE_APPLICATIONS / 10, 1)
+        completedSiteApps.take(toRemove).foreach { sapp =>
+          siteAppMetricsSystem.removeSource(sapp.appSource)
+        }
+        completedSiteApps.trimStart(toRemove)
+      }
+      completedSiteApps += siteApp
+      waitingSiteApps -= siteApp
+
+      for (exec <- siteApp.executors.values) {
+        killExecutor(exec)
+      }
+      siteApp.markFinished(state)
+      if (state != SiteAppState.FINISHED) {
+        siteApp.driver.send(SiteAppRemoved(state.toString))
+      }
+      persistenceEngine.removeSiteApp(siteApp)
+      schedule()
+      workers.foreach {w =>
+        // 原则上, 此处应该为SiteAppFinished, 但是本着尽量少修改Worker的意愿, 又不是必须修改
+        w.endpoint.send(ApplicationFinished(siteApp.id))
+      }
+    }
   }
 
   private def beginRecovery(
@@ -974,7 +1110,6 @@ private[deploy] class SiteMaster(
       try {
         registerSiteApp(sapp)
         sapp.state = SiteAppState.UNKNOWN
-        // TODO-lzp: what's the site app's driver, do what?
         sapp.driver.send(SiteMasterChanged(self, siteMasterWebUiUrl))
       } catch {
         case e: Exception =>
@@ -994,13 +1129,14 @@ private[deploy] class SiteMaster(
     }
   }
 
-  // TODO-lzp
-  private def registerSiteApp(sapp: SiteAppInfo): Unit = {
-
-  }
-
   private def generateSiteMasterId(): String = {
     "site-master-%s-%s-%d".format(createDateFormat.format(new Date), host, port)
+  }
+
+  private def killExecutor(exec: ExecutorDesc): Unit = {
+    exec.worker.removeExecutor(exec)
+    exec.worker.endpoint.send(KillExecutor(siteMasterUrl, exec.siteApp.id, exec.id))
+    exec.state = ExecutorState.KILLED
   }
 
   override def onStop(): Unit = {
@@ -1028,10 +1164,20 @@ private[deploy] class SiteMaster(
           worker.id, WORKER_TIMEOUT_MS / 1000
         ))
         removeWorker(worker)
-      } else {  // the state is DEAD, the worker has been removed, just keep in workers
+      } else { // the state is DEAD, the worker has been removed, just keep in workers
         if (worker.lastHeartbeat < currentTime - ((REAPER_ITERATIONS + 1) * WORKER_TIMEOUT_MS)) {
           workers -= worker
         }
+      }
+    }
+  }
+
+  private def trimFinishedSiteDriversIfNecessary(): Unit = {
+    // do not need to protect with locks since both WorkerPage and Restful server get data through
+    // thread-safe RpcEndPoint
+    if (finishedSiteDrivers.size > retainedSiteDrivers) {
+      finishedSiteDrivers.take(math.max(finishedSiteDrivers.size / 10, 1)).foreach {
+        case (executorId, _) => finishedSiteDrivers.remove(executorId)
       }
     }
   }

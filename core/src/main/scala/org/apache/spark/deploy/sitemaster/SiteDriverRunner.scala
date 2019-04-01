@@ -51,18 +51,19 @@ private[deploy] class SiteDriverRunner(
 ) extends Logging {
 
   private val fullId = appId + "/" + sdId
-  private var workerThread: Thread = null
-  private var process: Process = null
-  private var stdoutAppender: FileAppender = null
-  private var stderrAppender: FileAppender = null
+  private var workerThread: Thread = _
+  private var process: Process = _
+  private var stdoutAppender: FileAppender = _
+  private var stderrAppender: FileAppender = _
 
   private var SITE_DRIVER_TERMINATE_TIMEOUT_MS = 10 * 1000
 
-  private var shutdownHook: AnyRef = null
+  private var shutdownHook: AnyRef = _
 
   private[sitemaster] def start(): Unit = {
     workerThread = new Thread("SiteDriverRunner for " + fullId) {
-      override def run() { fetchAndRunExecutor() }
+      // fetchAndRun会阻塞, 因此要在新线程中执行
+      override def run() { fetchAndRunSiteDriver() }
     }
     workerThread.start()
     shutdownHook = ShutdownHookManager.addShutdownHook { () =>
@@ -119,7 +120,7 @@ private[deploy] class SiteDriverRunner(
     case other => other
   }
 
-  private def fetchAndRunExecutor(): Unit = {
+  private def fetchAndRunSiteDriver(): Unit = {
     try {
       val builder = CommandUtils.buildProcessBuilder(appDesc.command, new SecurityManager(conf),
         memory, sparkHome.getAbsolutePath, substituteVariables)

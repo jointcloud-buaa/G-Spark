@@ -36,6 +36,7 @@ import org.apache.spark.memory.TaskMemoryManager
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler.{AccumulableInfo, DirectTaskResult, IndirectTaskResult, Task}
 import org.apache.spark.shuffle.FetchFailedException
+import org.apache.spark.siteDriver.{ExecutorHeartbeat, ExecutorHeartbeatReceiver, ExecutorHeartbeatResponse}
 import org.apache.spark.storage.{StorageLevel, TaskResultBlockId}
 import org.apache.spark.util._
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -97,7 +98,8 @@ private[spark] class Executor(
 
   if (!isLocal) {
     env.metricsSystem.registerSource(executorSource)
-    env.blockManager.initialize(conf.getAppId)
+    // TODO-lzp: 修复块管理器
+//    env.blockManager.initialize(conf.getAppId)
   }
 
   // Whether to load classes in user jars before those in Spark jars
@@ -134,7 +136,7 @@ private[spark] class Executor(
 
   // must be initialized before running startDriverHeartbeat()
   private val heartbeatReceiverRef =
-    RpcUtils.makeDriverRef(HeartbeatReceiver.ENDPOINT_NAME, conf, env.rpcEnv)
+    RpcUtils.makeSiteDriverRef(ExecutorHeartbeatReceiver.ENDPOINT_NAME, conf, env.rpcEnv)
 
   /**
    * When an executor is unable to send heartbeats to the driver more than `HEARTBEAT_MAX_FAILURES`
@@ -687,9 +689,10 @@ private[spark] class Executor(
       }
     }
 
-    val message = Heartbeat(executorId, accumUpdates.toArray, env.blockManager.blockManagerId)
+    val message = ExecutorHeartbeat(
+      executorId, accumUpdates.toArray, env.blockManager.blockManagerId)
     try {
-      val response = heartbeatReceiverRef.askWithRetry[HeartbeatResponse](
+      val response = heartbeatReceiverRef.askWithRetry[ExecutorHeartbeatResponse](
           message, RpcTimeout(conf, "spark.executor.heartbeatInterval", "10s"))
       if (response.reregisterBlockManager) {
         logInfo("Told to re-register on heartbeat")

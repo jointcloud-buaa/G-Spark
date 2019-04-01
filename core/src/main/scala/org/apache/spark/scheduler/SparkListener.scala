@@ -27,7 +27,8 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 import org.apache.spark.{SparkConf, TaskEndReason}
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.scheduler.cluster.ExecutorInfo
+import org.apache.spark.scheduler.cluster.SiteDriverInfo
+import org.apache.spark.siteDriver.ExecutorInfo
 import org.apache.spark.storage.{BlockManagerId, BlockUpdatedInfo}
 import org.apache.spark.ui.SparkUI
 
@@ -102,6 +103,14 @@ case class SparkListenerExecutorAdded(time: Long, executorId: String, executorIn
   extends SparkListenerEvent
 
 @DeveloperApi
+case class SparkListenerSiteDriverAdded(time: Long, sdriverId: String, sdriverInfo: SiteDriverInfo)
+  extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerSiteDriverRemoved(time: Long, sdriverId: String, reason: String)
+  extends SparkListenerEvent
+
+@DeveloperApi
 case class SparkListenerExecutorRemoved(time: Long, executorId: String, reason: String)
   extends SparkListenerEvent
 
@@ -117,6 +126,17 @@ case class SparkListenerBlockUpdated(blockUpdatedInfo: BlockUpdatedInfo) extends
 case class SparkListenerExecutorMetricsUpdate(
     execId: String,
     accumUpdates: Seq[(Long, Int, Int, Seq[AccumulableInfo])])
+  extends SparkListenerEvent
+
+/**
+ * Periodic updates from site drivers
+ * @param sdriverId executor id
+ * @param accumUpdates sequence of (taskId, stageId, stageAttemptId, accumUpdates)
+ */
+@DeveloperApi
+case class SparkListenerSiteDriverMetricsUpdate(
+  sdriverId: String,
+  accumUpdates: Seq[(Long, Int, Int, Seq[AccumulableInfo])])
   extends SparkListenerEvent
 
 @DeveloperApi

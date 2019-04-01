@@ -15,19 +15,21 @@
  * limitations under the License.
  */
 
-package org.apache.spark.deploy.sitemaster
+package org.apache.spark.scheduler
 
-import org.apache.spark.deploy.Command
+private[spark] trait GlobalSchedulerBackend {
 
-private[spark] case class SiteAppDescription(
-  name: String,
-  maxCores: Option[Int],
-  memoryPerExecutorMB: Int,
-  command: Command,  // to start executor
-  // TODO-lzp: how to add eventLogDir
-  coresPerExecutor: Option[Int] = None,
-  initialExecutorLimit: Option[Int] = None,
-  user: String = System.getProperty("user.name", "<unknown>")) {
+  private val appId = "spark-application-" + System.currentTimeMillis()
 
-  override def toString: String = s"SiteAppDescription($name)"
+  def start(): Unit
+
+  def stop(): Unit
+
+  def isReady(): Boolean = true
+
+  def applicationId(): String = appId
+
+  def applicationAttemptId(): Option[String] = None
+
+  def getDriverLogUrls: Option[Map[String, String]] = None
 }

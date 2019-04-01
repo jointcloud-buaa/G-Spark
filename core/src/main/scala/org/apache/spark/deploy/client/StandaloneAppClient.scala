@@ -49,7 +49,7 @@ private[spark] class StandaloneAppClient(
     conf: SparkConf)
   extends Logging {
 
-  private val masterRpcAddresses = masterUrls.map(RpcAddress.fromSparkURL(_))
+  private val masterRpcAddresses = masterUrls.map(RpcAddress.fromSparkURL)
 
   private val REGISTRATION_TIMEOUT_SECONDS = 20
   private val REGISTRATION_RETRIES = 3
@@ -187,6 +187,14 @@ private[spark] class StandaloneAppClient(
         master = Some(gmRef)
         alreadyDisconnected = false
         gmRef.send(GlobalMasterChangeAcknowledged(appId.get))
+
+        // 获取 site master的地址是为了确保所有的site master都启动成功site driver后
+        // 应用才会开始任务分发. 即TaskSchedulerImpl#postStartHook()
+      case GetSiteMastersAddress =>
+        sendToMaster(GetSiteMastersAddress)
+
+      case SiteMastersAddressResponse(addrs) =>
+        listener.setSiteMastersAddress(addrs)
     }
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
@@ -310,6 +318,14 @@ private[spark] class StandaloneAppClient(
     } else {
       logWarning("Attempted to kill executors before driver fully initialized.")
       Future.successful(false)
+    }
+  }
+
+  def getAllSiteMastersUrl(): Unit = {
+    if (endpoint.get != null && appId.get != null) {
+      endpoint.get.send(GetSiteMastersAddress)
+    } else {
+      logWarning("Attempted to request sitemasters urls before driver fully initialized")
     }
   }
 

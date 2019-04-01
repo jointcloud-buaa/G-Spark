@@ -279,11 +279,13 @@ object SparkEnv extends Logging {
     conf: SparkConf,
     siteDriverId: String,
     hostname: String,
-    port: Int,
+    // TODO-lzp: 如果SiteDriver是与应用无关的服务, 则可以为0
     numCores: Int,
     ioEncryptionKey: Option[Array[Byte]],
     isLocal: Boolean,
     mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
+
+    val port = conf.getInt("spark.siteDriver.port", 0)
 
     val securityManager = new SecurityManager(conf, ioEncryptionKey)
     ioEncryptionKey.foreach { _ =>
@@ -320,6 +322,7 @@ object SparkEnv extends Logging {
     val shuffleManager = instantiateClass1[ShuffleManager](shuffleMgrClass, conf)
 
     val useLegacyMemoryManager = conf.getBoolean("spark.memory.useLegacyMode", false)
+    // MemoryManager的cores用来决定页大小
     val memoryManager: MemoryManager = if (useLegacyMemoryManager) {
         new StaticMemoryManager(conf, numCores)
       } else {
@@ -403,8 +406,10 @@ object SparkEnv extends Logging {
 
     val rpcEnv = RpcEnv.create(executorSystemName, hostname, hostname, port, conf,
       securityManager, true)
-    conf.set("spark.executor.port", rpcEnv.address.port.toString)
-    logInfo(s"Setting spark.executor.port to: ${rpcEnv.address.port.toString}")
+    if (rpcEnv.address != null) {
+      conf.set("spark.executor.port", rpcEnv.address.port.toString)
+      logInfo(s"Setting spark.executor.port to: ${rpcEnv.address.port.toString}")
+    }
 
     // 实例化序列器, 默认JavaSerializer类
     val serializerName = conf.get(
@@ -419,12 +424,12 @@ object SparkEnv extends Logging {
     val broadcastManager = new BroadcastManager(false, conf, securityManager)
 
     val mapOutputTracker = new MapOutputTrackerWorker(conf)
-    mapOutputTracker.trackerEndpoint = RpcUtils.makeRef(
-      MapOutputTracker.ENDPOINT_NAME,
-      conf.get("spark.siteDriver.host", "localhost"),
-      conf.getInt("spark.siteDriver.port", 7077),
-      rpcEnv
-    )
+//    mapOutputTracker.trackerEndpoint = RpcUtils.makeRef(
+//      MapOutputTracker.ENDPOINT_NAME,
+//      conf.get("spark.siteDriver.host", "localhost"),
+//      conf.getInt("spark.siteDriver.port", 7077),
+//      rpcEnv
+//    )
 
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
@@ -443,12 +448,13 @@ object SparkEnv extends Logging {
     val blockManagerPort = conf.get(BLOCK_MANAGER_PORT)
     val blockTransferService = new NettyBlockTransferService(
       conf, securityManager, hostname, hostname, blockManagerPort, numCores)
-    val blockManagerMasterRef = RpcUtils.makeRef(
-      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
-      conf.get("spark.globalDriver.host", "localhost"),
-      conf.getInt("spark.globalDriver.port", 7077),
-      rpcEnv
-    )
+    val blockManagerMasterRef = null
+//    val blockManagerMasterRef = RpcUtils.makeRef(
+//      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
+//      conf.get("spark.siteDriver.host", "localhost"),
+//      conf.getInt("spark.siteDriver.port", 7077),
+//      rpcEnv
+//    )
     // TODO-lzp: about the isDriver
     val blockManagerMaster = new BlockManagerMaster(blockManagerMasterRef, conf, false)
     val blockManager = new BlockManager(executorId, rpcEnv, blockManagerMaster,

@@ -14,26 +14,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.spark.scheduler
 
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.AccumulatorV2
 
-/**
- * Low-level task scheduler interface, currently implemented exclusively by
- * [[org.apache.spark.scheduler.TaskSchedulerImpl]].
- * This interface allows plugging in different task schedulers. Each TaskScheduler schedules tasks
- * for a single SparkContext. These schedulers get sets of tasks submitted to them from the
- * DAGScheduler for each stage, and are responsible for sending the tasks to the cluster, running
- * them, retrying if there are failures, and mitigating stragglers. They return events to the
- * DAGScheduler.
- */
-private[spark] trait TaskScheduler {
-
+private[spark] trait GlobalTaskScheduler {
   private val appId = "spark-application-" + System.currentTimeMillis
 
+  // 根调度队列
   def rootPool: Pool
 
   def schedulingMode: SchedulingMode
@@ -43,11 +33,13 @@ private[spark] trait TaskScheduler {
   // Invoked after system has successfully initialized (typically in spark context).
   // Yarn uses this to bootstrap allocation of resources based on preferred locations,
   // wait for slave registrations, etc.
+  // 在系统成功初始化后调用. 可以理解为, 在此处等待应用的执行架构启动成功, 此后即可分配task
   def postStartHook() { }
 
   // Disconnect from the cluster.
   def stop(): Unit
 
+  // TODO-lzp: 具体的每个stage的task如何提交尚不明确
   // Submit a sequence of tasks to run.
   def submitTasks(taskSet: TaskSet): Unit
 
@@ -55,38 +47,23 @@ private[spark] trait TaskScheduler {
   def cancelTasks(stageId: Int, interruptThread: Boolean): Unit
 
   // Set the DAG scheduler for upcalls. This is guaranteed to be set before submitTasks is called.
+  // 在submitTasks调用前会调用此来设置DAGScheduler
   def setDAGScheduler(dagScheduler: DAGScheduler): Unit
 
+  // TODO-lzp: 两层架构下的默认并行度如何定义
   // Get the default level of parallelism to use in the cluster, as a hint for sizing jobs.
   def defaultParallelism(): Int
 
-  /**
-   * Update metrics for in-progress tasks and let the master know that the BlockManager is still
-   * alive. Return true if the driver knows about the given block manager. Otherwise, return false,
-   * indicating that the block manager should re-register.
-   */
-  def executorHeartbeatReceived(
-      execId: String,
-      accumUpdates: Array[(Long, Seq[AccumulatorV2[_, _]])],
-      blockManagerId: BlockManagerId): Boolean
+  // 周期性更新此site driver上task的一些统计信息, 并检测site driver's blockmanager是否活着
+  def siteDriverHeartbeatReceived(
+    sdriverId: String,
+    accumUpdates: Array[(Long, Seq[AccumulatorV2[_, _]])],
+    blockManagerId: BlockManagerId): Boolean
 
-  /**
-   * Get an application ID associated with the job.
-   *
-   * @return An application ID
-   */
   def applicationId(): String = appId
 
-  /**
-   * Process a lost executor
-   */
-  def executorLost(executorId: String, reason: ExecutorLossReason): Unit
+  def siteDriverLost(sdriverId: String, reason: SiteDriverLossReason): Unit
 
-  /**
-   * Get an application's attempt ID associated with the job.
-   *
-   * @return An application's Attempt ID
-   */
   def applicationAttemptId(): Option[String]
 
 }

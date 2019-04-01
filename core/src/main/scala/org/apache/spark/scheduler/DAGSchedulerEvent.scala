@@ -77,7 +77,13 @@ private[scheduler] case class CompletionEvent(
 
 private[scheduler] case class ExecutorAdded(execId: String, host: String) extends DAGSchedulerEvent
 
+private[scheduler] case class SiteDriverAdded(sdriverId: String, host: String)
+  extends DAGSchedulerEvent
+
 private[scheduler] case class ExecutorLost(execId: String, reason: ExecutorLossReason)
+  extends DAGSchedulerEvent
+
+private[scheduler] case class SiteDriverLost(execId: String, reason: ExecutorLossReason)
   extends DAGSchedulerEvent
 
 private[scheduler]

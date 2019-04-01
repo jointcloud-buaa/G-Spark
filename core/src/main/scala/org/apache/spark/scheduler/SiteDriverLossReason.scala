@@ -47,12 +47,13 @@ private[spark] object SiteDriverKilled extends SiteDriverLossReason("Executor ki
  * not yet fail any tasks that were running in the executor before the real loss reason
  * is known.
  */
-private [spark] object SDLossReasonPending extends SiteDriverLossReason("Pending loss reason.")
+private [spark] object SiteDriverLossReasonPending
+  extends SiteDriverLossReason("Pending loss reason.")
 
 /**
  * @param _message human readable loss reason
- * @param workerLost whether the worker is confirmed lost too (i.e. including shuffle service)
+ * @param siteMasterLost whether the worker is confirmed lost too (i.e. including shuffle service)
  */
 private[spark]
-case class SiteDriverLost(_message: String = "Slave lost", workerLost: Boolean = false)
+case class SiteDriverSlaveLost(_message: String = "Slave lost", siteMasterLost: Boolean = false)
   extends SiteDriverLossReason(_message)

@@ -15,19 +15,13 @@
  * limitations under the License.
  */
 
-package org.apache.spark.deploy.sitemaster
+package org.apache.spark.scheduler.cluster
 
-import org.apache.spark.deploy.Command
+import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef}
 
-private[spark] case class SiteAppDescription(
-  name: String,
-  maxCores: Option[Int],
-  memoryPerExecutorMB: Int,
-  command: Command,  // to start executor
-  // TODO-lzp: how to add eventLogDir
-  coresPerExecutor: Option[Int] = None,
-  initialExecutorLimit: Option[Int] = None,
-  user: String = System.getProperty("user.name", "<unknown>")) {
-
-  override def toString: String = s"SiteAppDescription($name)"
-}
+private[cluster] class SiteDriverData(
+  val endpoint: RpcEndpointRef,
+  val address: RpcAddress,
+  override val sdriverHost: String,
+  override val logUrlMap: Map[String, String]
+) extends SiteDriverInfo(sdriverHost, logUrlMap)

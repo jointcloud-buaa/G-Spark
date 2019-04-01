@@ -20,7 +20,7 @@ package org.apache.spark.scheduler.cluster
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
-import scala.concurrent.Future
+import scala.collection.mutable.HashSet
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.deploy.{ApplicationDescription, Command}
@@ -28,49 +28,47 @@ import org.apache.spark.deploy.client.{StandaloneAppClient, StandaloneAppClientL
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.{LauncherBackend, SparkAppHandle}
 import org.apache.spark.rpc.RpcEndpointAddress
-import org.apache.spark.scheduler._
+import org.apache.spark.scheduler.{GlobalTaskSchedulerImpl, SiteDriverExited, SiteDriverLossReason, SiteDriverSlaveLost}
 import org.apache.spark.util.Utils
 
-/**
- * A [[SchedulerBackend]] implementation for Spark's standalone cluster manager.
- */
-private[spark] class StandaloneSchedulerBackend(
-    scheduler: TaskSchedulerImpl,
-    sc: SparkContext,
-    masters: Array[String])
-  extends CoarseGrainedSchedulerBackend(scheduler, sc.env.rpcEnv)
+private[spark] class StandaloneGlobalSchedulerBackend(
+  scheduler: GlobalTaskSchedulerImpl,
+  sc: SparkContext,
+  masters: Array[String]
+) extends CoarseGrainedGlobalSchedulerBackend(scheduler, sc.env.rpcEnv)
   with StandaloneAppClientListener
   with Logging {
 
-  private var client: StandaloneAppClient = null
+  private var client: StandaloneAppClient = _
   private val stopping = new AtomicBoolean(false)
+  // connect with Launcher Server
   private val launcherBackend = new LauncherBackend() {
     override protected def onStopRequest(): Unit = stop(SparkAppHandle.State.KILLED)
   }
 
-  @volatile var shutdownCallback: StandaloneSchedulerBackend => Unit = _
+  // TODO-lzp: 什么时候减
+  private val siteMastersUrl = HashSet.empty[String]
+
+  @volatile var shutdownCallback: StandaloneGlobalSchedulerBackend => Unit = _
   @volatile private var appId: String = _
 
+  // 设置一个初始为0的信号量
   private val registrationBarrier = new Semaphore(0)
 
   private val maxCores = conf.getOption("spark.cores.max").map(_.toInt)
-  private val totalExpectedCores = maxCores.getOrElse(0)
 
-  override def start() {
+  override def start(): Unit = {
     super.start()
 
-    // SPARK-21159. The scheduler backend should only try to connect to the launcher when in client
-    // mode. In cluster mode, the code that submits the application to the Master needs to connect
-    // to the launcher instead.
     if (sc.deployMode == "client") {
       launcherBackend.connect()
     }
 
-    // The endpoint for executors to talk to us
+    // The endpoint for site drivers to talk to us
     val gdriverUrl = RpcEndpointAddress(
       sc.conf.get("spark.globalDriver.host"),
       sc.conf.get("spark.globalDriver.port").toInt,
-      CoarseGrainedSchedulerBackend.ENDPOINT_NAME).toString
+      CoarseGrainedGlobalSchedulerBackend.ENDPOINT_NAME).toString
     val args = Seq(
       "--global-driver-url", gdriverUrl,
       "--site-driver-id", "{{SITE_DRIVER_ID}}",
@@ -88,29 +86,27 @@ private[spark] class StandaloneSchedulerBackend(
     // When testing, expose the parent class path to the child. This is processed by
     // compute-classpath.{cmd,sh} and makes all needed jars available to child processes
     // when the assembly is built with the "*-provided" profiles enabled.
-    val testingClassPath =
-      if (sys.props.contains("spark.testing")) {
-        sys.props("java.class.path").split(java.io.File.pathSeparator).toSeq
-      } else {
-        Nil
-      }
+    val testingClassPath = if (sys.props.contains("spark.testing")) {
+      sys.props("java.class.path").split(java.io.File.pathSeparator).toSeq
+    } else {
+      Nil
+    }
 
     // Start executors with a few necessary configs for registering with the scheduler
-    val sparkJavaOpts = Utils.sparkJavaOpts(conf, SparkConf.isExecutorStartupConf)
+    val sparkJavaOpts = Utils.sparkJavaOpts(conf, SparkConf.isComponetStartupConf)
     val javaOpts = sparkJavaOpts ++ extraJavaOpts
-    val command = Command("org.apache.spark.siteDriver.CoarseGrainedSiteDriverBackend",
+    val command = Command("org.apache.spark.siteDriver.SiteDriverWrapper",
       args, sc.executorEnvs, classPathEntries ++ testingClassPath, libraryPathEntries, javaOpts)
     val appUIAddress = sc.ui.map(_.appUIAddress).getOrElse("")
     val coresPerSiteDriver = conf.getOption("spark.siteDriver.cores").map(_.toInt)
     val coresPerExecutor = conf.getOption("spark.executor.cores").map(_.toInt)
     // If we're using dynamic allocation, set our initial executor limit to 0 for now.
     // ExecutorAllocationManager will send the real initial limit to the Master later.
-    val initialExecutorLimit =
-      if (Utils.isDynamicAllocationEnabled(conf)) {
-        Some(0)
-      } else {
-        None
-      }
+    val initialExecutorLimit = if (Utils.isDynamicAllocationEnabled(conf)) {
+      Some(0)
+    } else {
+      None
+    }
     val appDesc = ApplicationDescription(
       sc.appName,
       maxCores,
@@ -130,25 +126,25 @@ private[spark] class StandaloneSchedulerBackend(
     launcherBackend.setState(SparkAppHandle.State.RUNNING)
   }
 
-  override def stop(): Unit = {
-    stop(SparkAppHandle.State.FINISHED)
-  }
+  override def stop(): Unit = stop(SparkAppHandle.State.FINISHED)
 
-  override def connected(appId: String) {
-    logInfo("Connected to Spark cluster with app ID " + appId)
+  // 以下方法属于ClientListener, 由AppClient调用
+  override def connected(appId: String): Unit = {
+    logInfo(s"Connected to Spark Cluster with app Id: $appId")
     this.appId = appId
     notifyContext()
     launcherBackend.setAppId(appId)
   }
 
-  override def disconnected() {
+  // application register failed or ClientEndpoint disconnect
+  override def disconnected(): Unit = {
     notifyContext()
     if (!stopping.get) {
       logWarning("Disconnected from Spark cluster! Waiting for reconnection...")
     }
   }
 
-  override def dead(reason: String) {
+  override def dead(reason: String): Unit = {
     notifyContext()
     if (!stopping.get) {
       launcherBackend.setState(SparkAppHandle.State.KILLED)
@@ -168,62 +164,25 @@ private[spark] class StandaloneSchedulerBackend(
       fullId, hostPort, cores, Utils.megabytesToString(memory)))
   }
 
-  // TODO-lzp
   override def siteDriverRemoved(
     fullId: String, message: String, exitStatus: Option[Int], siteMasterLost: Boolean): Unit = {
-  }
-
-  override def sufficientResourcesRegistered(): Boolean = {
-    totalCoreCount.get() >= totalExpectedCores * minRegisteredRatio
-  }
-
-  override def applicationId(): String =
-    Option(appId).getOrElse {
-      logWarning("Application ID is not initialized yet.")
-      super.applicationId
+    val reason: SiteDriverLossReason = exitStatus match {
+      case Some(code) => SiteDriverExited(code, exitCausedByApp = true, message)
+      case None => SiteDriverSlaveLost(message, siteMasterLost = siteMasterLost)
     }
-
-  /**
-   * Request executors from the Master by specifying the total number desired,
-   * including existing pending and running executors.
-   *
-   * @return whether the request is acknowledged.
-   */
-  protected override def doRequestTotalExecutors(requestedTotal: Int): Future[Boolean] = {
-    Option(client) match {
-      case Some(c) => c.requestTotalExecutors(requestedTotal)
-      case None =>
-        logWarning("Attempted to request executors before driver fully initialized.")
-        Future.successful(false)
-    }
+    logInfo(s"SiteDriver $fullId removed: $message")
+    removeSiteDriver(fullId.split("/")(1), reason)
   }
 
-  /**
-   * Kill the given list of executors through the Master.
-   * @return whether the kill request is acknowledged.
-   */
-  protected override def doKillExecutors(executorIds: Seq[String]): Future[Boolean] = {
-    Option(client) match {
-      case Some(c) => c.killExecutors(executorIds)
-      case None =>
-        logWarning("Attempted to kill executors before driver fully initialized.")
-        Future.successful(false)
-    }
-  }
+  def notifyContext(): Unit = registrationBarrier.release()
 
-  private def waitForRegistration() = {
-    registrationBarrier.acquire()
-  }
-
-  private def notifyContext() = {
-    registrationBarrier.release()
-  }
+  def waitForRegistration(): Unit = registrationBarrier.acquire()
 
   private def stop(finalState: SparkAppHandle.State): Unit = {
     if (stopping.compareAndSet(false, true)) {
       try {
-        super.stop()
-        client.stop()
+        super.stop()  // stop SchedulerBackend
+        client.stop()  // stop AppClient
 
         val callback = shutdownCallback
         if (callback != null) {
@@ -236,4 +195,20 @@ private[spark] class StandaloneSchedulerBackend(
     }
   }
 
+  // 确保siteDriverReady的值, 包含所有SiteMasterUrl
+  override def sufficientResourcesRegistered(): Boolean = {
+    if (siteMastersUrl.isEmpty) return false
+    (siteMastersUrl -- siteDriverReady.values.toSet).isEmpty
+  }
+
+  override def setSiteMastersAddress(urls: Array[String]): Unit = {
+    for (url <- urls) siteMastersUrl += url
+  }
+
+  override def applicationId(): String = Option(appId).getOrElse {
+      logWarning("Application ID is not initialized yet.")
+      super.applicationId
+    }
+
+  // TODO-lzp: 能否将requestTotalExecutors, 分别给不同集群去请求, 但目的又是什么呢
 }

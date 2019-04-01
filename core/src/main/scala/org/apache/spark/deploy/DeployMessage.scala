@@ -156,15 +156,17 @@ private[deploy] object DeployMessages {
   case class KillExecutor(masterUrl: String, siteAppId: String, execId: Int) extends DeployMessage
 
   case class LaunchExecutor(
-      masterUrl: String,
-      appId: String,
+      smasterUrl: String,
+      siteAppId: String,
       execId: Int,
-      appDesc: ApplicationDescription,
+      siteAppDesc: SiteAppDescription,
       cores: Int,
       memory: Int)
     extends DeployMessage
 
   case class ApplicationFinished(id: String)
+
+  case class SiteAppFinished(id: String)
 
   // Worker internal
 
@@ -211,13 +213,25 @@ private[deploy] object DeployMessages {
     Utils.checkHostPort(hostPort, "Required hostport")
   }
 
-  case class SiteDriverUpdated(id: String, state: SiteDriverState, message: Option[String],
-                               exitStatus: Option[Int], siteMasterLost: Boolean)
+  case class SiteDriverUpdated(
+    id: String,
+    state: SiteDriverState,
+    message: Option[String],
+    exitStatus: Option[Int],
+    siteMasterLost: Boolean  // 是否SiteMaster丢失
+  )
 
-  case class ExecutorUpdated(id: Int, state: ExecutorState, message: Option[String],
-    exitStatus: Option[Int], workerLost: Boolean)
+  case class ExecutorUpdated(
+    id: Int,
+    state: ExecutorState,
+    message: Option[String],
+    exitStatus: Option[Int],
+    workerLost: Boolean
+  )
 
   case class ApplicationRemoved(message: String)
+
+  case class SiteAppRemoved(message: String)
 
   // DriverClient <-> Master
 
@@ -260,6 +274,12 @@ private[deploy] object DeployMessages {
   // Internal message in AppClient
 
   case object StopAppClient
+
+  case object StopSiteAppClient
+
+  case object GetSiteMastersAddress
+
+  case class SiteMastersAddressResponse(urls: Array[String])
 
   // Master to Worker & AppClient
 

@@ -32,7 +32,7 @@ import org.apache.spark.util.{LongAccumulator, ThreadUtils, Utils}
 /**
  * Runs a thread pool that deserializes and remotely fetches (if necessary) task results.
  */
-private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedulerImpl)
+private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: GlobalTaskSchedulerImpl)
   extends Logging {
 
   private val THREADS = sparkEnv.conf.getInt("spark.resultGetter.threads", 4)

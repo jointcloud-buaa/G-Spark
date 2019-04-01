@@ -19,7 +19,7 @@ package org.apache.spark
 
 import java.io._
 import java.lang.reflect.Constructor
-import java.net.{URI}
+import java.net.URI
 import java.util.{Arrays, Locale, Properties, ServiceLoader, UUID}
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
@@ -52,7 +52,7 @@ import org.apache.spark.partial.{ApproximateEvaluator, PartialResult}
 import org.apache.spark.rdd._
 import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.scheduler._
-import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, StandaloneSchedulerBackend}
+import org.apache.spark.scheduler.cluster.{CoarseGrainedGlobalSchedulerBackend, StandaloneGlobalSchedulerBackend}
 import org.apache.spark.scheduler.local.LocalSchedulerBackend
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.TriggerThreadDump
@@ -203,8 +203,8 @@ class SparkContext(config: SparkConf) extends Logging {
   private var _hadoopConfiguration: Configuration = _
   private var _executorMemory: Int = _
   private var _siteDriverMemory: Int = _
-  private var _schedulerBackend: SchedulerBackend = _
-  private var _taskScheduler: TaskScheduler = _
+  private var _schedulerBackend: GlobalSchedulerBackend = _
+  private var _taskScheduler: GlobalTaskScheduler = _
   private var _heartbeatReceiver: RpcEndpointRef = _
   @volatile private var _dagScheduler: DAGScheduler = _
   private var _applicationId: String = _
@@ -297,10 +297,10 @@ class SparkContext(config: SparkConf) extends Logging {
   // Set SPARK_USER for user who is running SparkContext.
   val sparkUser = Utils.getCurrentUserName()
 
-  private[spark] def schedulerBackend: SchedulerBackend = _schedulerBackend
+  private[spark] def schedulerBackend: GlobalSchedulerBackend = _schedulerBackend
 
-  private[spark] def taskScheduler: TaskScheduler = _taskScheduler
-  private[spark] def taskScheduler_=(ts: TaskScheduler): Unit = {
+  private[spark] def taskScheduler: GlobalTaskScheduler = _taskScheduler
+  private[spark] def taskScheduler_=(ts: GlobalTaskScheduler): Unit = {
     _taskScheduler = ts
   }
 
@@ -1498,60 +1498,17 @@ class SparkContext(config: SparkConf) extends Logging {
     listenerBus.addListener(listener)
   }
 
-  private[spark] def getExecutorIds(): Seq[String] = {
+  private[spark] def getSiteDriverIds(): Seq[String] = {
     schedulerBackend match {
-      case b: CoarseGrainedSchedulerBackend =>
-        b.getExecutorIds()
+      case b: CoarseGrainedGlobalSchedulerBackend =>
+        b.getSiteDriverIds
       case _ =>
-        logWarning("Requesting executors is only supported in coarse-grained mode")
+        logWarning("Requesting site drivers is only supported in coarse-grained mode")
         Nil
     }
   }
 
-  /**
-   * Update the cluster manager on our scheduling needs. Three bits of information are included
-   * to help it make decisions.
-   * @param numExecutors The total number of executors we'd like to have. The cluster manager
-   *                     shouldn't kill any running executor to reach this number, but,
-   *                     if all existing executors were to die, this is the number of executors
-   *                     we'd want to be allocated.
-   * @param localityAwareTasks The number of tasks in all active stages that have a locality
-   *                           preferences. This includes running, pending, and completed tasks.
-   * @param hostToLocalTaskCount A map of hosts to the number of tasks from all active stages
-   *                             that would like to like to run on that host.
-   *                             This includes running, pending, and completed tasks.
-   * @return whether the request is acknowledged by the cluster manager.
-   */
-  @DeveloperApi
-  def requestTotalExecutors(
-      numExecutors: Int,
-      localityAwareTasks: Int,
-      hostToLocalTaskCount: scala.collection.immutable.Map[String, Int]
-    ): Boolean = {
-    schedulerBackend match {
-      case b: CoarseGrainedSchedulerBackend =>
-        b.requestTotalExecutors(numExecutors, localityAwareTasks, hostToLocalTaskCount)
-      case _ =>
-        logWarning("Requesting executors is only supported in coarse-grained mode")
-        false
-    }
-  }
-
-  /**
-   * :: DeveloperApi ::
-   * Request an additional number of executors from the cluster manager.
-   * @return whether the request is received.
-   */
-  @DeveloperApi
-  def requestExecutors(numAdditionalExecutors: Int): Boolean = {
-    schedulerBackend match {
-      case b: CoarseGrainedSchedulerBackend =>
-        b.requestExecutors(numAdditionalExecutors)
-      case _ =>
-        logWarning("Requesting executors is only supported in coarse-grained mode")
-        false
-    }
-  }
+  // TODO-lzp: 能否把请求executor, 分解到每个SiteMaster去请求executor?
 
   /**
    * :: DeveloperApi ::
@@ -1564,16 +1521,16 @@ class SparkContext(config: SparkConf) extends Logging {
    *
    * @return whether the request is received.
    */
-  @DeveloperApi
-  def killExecutors(executorIds: Seq[String]): Boolean = {
-    schedulerBackend match {
-      case b: CoarseGrainedSchedulerBackend =>
-        b.killExecutors(executorIds, replace = false, force = true).nonEmpty
-      case _ =>
-        logWarning("Killing executors is only supported in coarse-grained mode")
-        false
-    }
-  }
+//  @DeveloperApi
+//  def killExecutors(executorIds: Seq[String]): Boolean = {
+//    schedulerBackend match {
+//      case b: CoarseGrainedSchedulerBackend =>
+//        b.killExecutors(executorIds, replace = false, force = true).nonEmpty
+//      case _ =>
+//        logWarning("Killing executors is only supported in coarse-grained mode")
+//        false
+//    }
+//  }
 
   /**
    * :: DeveloperApi ::
@@ -1586,8 +1543,8 @@ class SparkContext(config: SparkConf) extends Logging {
    *
    * @return whether the request is received.
    */
-  @DeveloperApi
-  def killExecutor(executorId: String): Boolean = killExecutors(Seq(executorId))
+//  @DeveloperApi
+//  def killExecutor(executorId: String): Boolean = killExecutors(Seq(executorId))
 
   /**
    * Request that the cluster manager kill the specified executor without adjusting the
@@ -1603,14 +1560,19 @@ class SparkContext(config: SparkConf) extends Logging {
    *
    * @return whether the request is received.
    */
-  private[spark] def killAndReplaceExecutor(executorId: String): Boolean = {
-    schedulerBackend match {
-      case b: CoarseGrainedSchedulerBackend =>
-        b.killExecutors(Seq(executorId), replace = true, force = true).nonEmpty
-      case _ =>
-        logWarning("Killing executors is only supported in coarse-grained mode")
-        false
-    }
+//  private[spark] def killAndReplaceExecutor(executorId: String): Boolean = {
+//    schedulerBackend match {
+//      case b: CoarseGrainedSchedulerBackend =>
+//        b.killExecutors(Seq(executorId), replace = true, force = true).nonEmpty
+//      case _ =>
+//        logWarning("Killing executors is only supported in coarse-grained mode")
+//        false
+//    }
+//  }
+
+  // TODO-lzp: 不确定是否要做
+  private[spark] def killAndReplaceSiteDriver(sdriverId: String): Boolean = {
+    true
   }
 
   /** The version of Spark on which this application is running. */
@@ -2511,83 +2473,83 @@ object SparkContext extends Logging {
   private def createTaskScheduler(
       sc: SparkContext,
       master: String,
-      deployMode: String): (SchedulerBackend, TaskScheduler) = {
+      deployMode: String): (GlobalSchedulerBackend, GlobalTaskScheduler) = {
     import SparkMasterRegex._
 
     // When running locally, don't try to re-execute tasks on failure.
     val MAX_LOCAL_TASK_FAILURES = 1
 
     master match {
-      case "local" =>
-        val scheduler = new TaskSchedulerImpl(sc, MAX_LOCAL_TASK_FAILURES, isLocal = true)
-        val backend = new LocalSchedulerBackend(sc.getConf, scheduler, 1)
-        scheduler.initialize(backend)
-        (backend, scheduler)
-
-      case LOCAL_N_REGEX(threads) =>
-        def localCpuCount: Int = Runtime.getRuntime.availableProcessors()
-        // local[*] estimates the number of cores on the machine; local[N] uses exactly N threads.
-        val threadCount = if (threads == "*") localCpuCount else threads.toInt
-        if (threadCount <= 0) {
-          throw new SparkException(s"Asked to run locally with $threadCount threads")
-        }
-        val scheduler = new TaskSchedulerImpl(sc, MAX_LOCAL_TASK_FAILURES, isLocal = true)
-        val backend = new LocalSchedulerBackend(sc.getConf, scheduler, threadCount)
-        scheduler.initialize(backend)
-        (backend, scheduler)
-
-      case LOCAL_N_FAILURES_REGEX(threads, maxFailures) =>
-        def localCpuCount: Int = Runtime.getRuntime.availableProcessors()
-        // local[*, M] means the number of cores on the computer with M failures
-        // local[N, M] means exactly N threads with M failures
-        val threadCount = if (threads == "*") localCpuCount else threads.toInt
-        val scheduler = new TaskSchedulerImpl(sc, maxFailures.toInt, isLocal = true)
-        val backend = new LocalSchedulerBackend(sc.getConf, scheduler, threadCount)
-        scheduler.initialize(backend)
-        (backend, scheduler)
+//      case "local" =>
+//        val scheduler = new TaskSchedulerImpl(sc, MAX_LOCAL_TASK_FAILURES, isLocal = true)
+//        val backend = new LocalSchedulerBackend(sc.getConf, scheduler, 1)
+//        scheduler.initialize(backend)
+//        (backend, scheduler)
+//
+//      case LOCAL_N_REGEX(threads) =>
+//        def localCpuCount: Int = Runtime.getRuntime.availableProcessors()
+//        // local[*] estimates the number of cores on the machine; local[N] uses exactly N threads.
+//        val threadCount = if (threads == "*") localCpuCount else threads.toInt
+//        if (threadCount <= 0) {
+//          throw new SparkException(s"Asked to run locally with $threadCount threads")
+//        }
+//        val scheduler = new TaskSchedulerImpl(sc, MAX_LOCAL_TASK_FAILURES, isLocal = true)
+//        val backend = new LocalSchedulerBackend(sc.getConf, scheduler, threadCount)
+//        scheduler.initialize(backend)
+//        (backend, scheduler)
+//
+//      case LOCAL_N_FAILURES_REGEX(threads, maxFailures) =>
+//        def localCpuCount: Int = Runtime.getRuntime.availableProcessors()
+//        // local[*, M] means the number of cores on the computer with M failures
+//        // local[N, M] means exactly N threads with M failures
+//        val threadCount = if (threads == "*") localCpuCount else threads.toInt
+//        val scheduler = new TaskSchedulerImpl(sc, maxFailures.toInt, isLocal = true)
+//        val backend = new LocalSchedulerBackend(sc.getConf, scheduler, threadCount)
+//        scheduler.initialize(backend)
+//        (backend, scheduler)
 
       case SPARK_REGEX(sparkUrl) =>
-        val scheduler = new TaskSchedulerImpl(sc)
+        val scheduler = new GlobalTaskSchedulerImpl(sc)
         val masterUrls = sparkUrl.split(",").map("spark://" + _)
-        val backend = new StandaloneSchedulerBackend(scheduler, sc, masterUrls)
+        val backend = new StandaloneGlobalSchedulerBackend(scheduler, sc, masterUrls)
         scheduler.initialize(backend)
         (backend, scheduler)
 
-      case LOCAL_CLUSTER_REGEX(numSlaves, coresPerSlave, memoryPerSlave) =>
-        // Check to make sure memory requested <= memoryPerSlave. Otherwise Spark will just hang.
-        val memoryPerSlaveInt = memoryPerSlave.toInt
-        if (sc.executorMemory > memoryPerSlaveInt) {
-          throw new SparkException(
-            "Asked to launch cluster with %d MB RAM / worker but requested %d MB/worker".format(
-              memoryPerSlaveInt, sc.executorMemory))
-        }
-
-        val scheduler = new TaskSchedulerImpl(sc)
-        val localCluster = new LocalSparkCluster(
-          numSlaves.toInt, coresPerSlave.toInt, memoryPerSlaveInt, sc.conf)
-        val masterUrls = localCluster.start()
-        val backend = new StandaloneSchedulerBackend(scheduler, sc, masterUrls)
-        scheduler.initialize(backend)
-        backend.shutdownCallback = (backend: StandaloneSchedulerBackend) => {
-          localCluster.stop()
-        }
-        (backend, scheduler)
-
-      case masterUrl =>
-        val cm = getClusterManager(masterUrl) match {
-          case Some(clusterMgr) => clusterMgr
-          case None => throw new SparkException("Could not parse Master URL: '" + master + "'")
-        }
-        try {
-          val scheduler = cm.createTaskScheduler(sc, masterUrl)
-          val backend = cm.createSchedulerBackend(sc, masterUrl, scheduler)
-          cm.initialize(scheduler, backend)
-          (backend, scheduler)
-        } catch {
-          case se: SparkException => throw se
-          case NonFatal(e) =>
-            throw new SparkException("External scheduler cannot be instantiated", e)
-        }
+//      case LOCAL_CLUSTER_REGEX(numSlaves, coresPerSlave, memoryPerSlave) =>
+//        // Check to make sure memory requested <= memoryPerSlave. Otherwise Spark will just hang.
+//        val memoryPerSlaveInt = memoryPerSlave.toInt
+//        if (sc.executorMemory > memoryPerSlaveInt) {
+//          throw new SparkException(
+//            "Asked to launch cluster with %d MB RAM / worker but requested %d MB/worker".format(
+//              memoryPerSlaveInt, sc.executorMemory))
+//        }
+//
+//        val scheduler = new TaskSchedulerImpl(sc)
+//        val localCluster = new LocalSparkCluster(
+//          numSlaves.toInt, coresPerSlave.toInt, memoryPerSlaveInt, sc.conf)
+//        val masterUrls = localCluster.start()
+//        val backend = new StandaloneSchedulerBackend(scheduler, sc, masterUrls)
+//        scheduler.initialize(backend)
+//        backend.shutdownCallback = (backend: StandaloneSchedulerBackend) => {
+//          localCluster.stop()
+//        }
+//        (backend, scheduler)
+//
+//      case masterUrl =>
+//        val cm = getClusterManager(masterUrl) match {
+//          case Some(clusterMgr) => clusterMgr
+//          case None => throw new SparkException("Could not parse Master URL: '" + master + "'")
+//        }
+//        try {
+//          val scheduler = cm.createTaskScheduler(sc, masterUrl)
+//          val backend = cm.createSchedulerBackend(sc, masterUrl, scheduler)
+//          cm.initialize(scheduler, backend)
+//          (backend, scheduler)
+//        } catch {
+//          case se: SparkException => throw se
+//          case NonFatal(e) =>
+//            throw new SparkException("External scheduler cannot be instantiated", e)
+//        }
     }
   }
 

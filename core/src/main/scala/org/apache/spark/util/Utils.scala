@@ -62,6 +62,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, SerializerInstance}
+import org.apache.spark.siteDriver.SiteContext
 
 /** CallSite represents a place in user code. It can have a short and a long form. */
 private[spark] case class CallSite(shortForm: String, longForm: String)
@@ -1256,6 +1257,25 @@ private[spark] object Utils extends Logging {
    * spark-started JVM process .
    */
   def tryOrStopSparkContext(sc: SparkContext)(block: => Unit) {
+    try {
+      block
+    } catch {
+      case e: ControlThrowable => throw e
+      case t: Throwable =>
+        val currentThreadName = Thread.currentThread().getName
+        if (sc != null) {
+          logError(s"uncaught error in thread $currentThreadName, stopping SparkContext", t)
+          sc.stopInNewThread()
+        }
+        if (!NonFatal(t)) {
+          logError(s"throw uncaught fatal error in thread $currentThreadName", t)
+          throw t
+        }
+    }
+  }
+
+  // TODO-lzp: maybe merge with up method, to extends a closable Context trait
+  def tryOrStopSiteContext(sc: SiteContext)(block: => Unit) {
     try {
       block
     } catch {
