@@ -2381,7 +2381,6 @@ object SparkContext extends Logging {
    * SPARK-6716 for more details).
    */
   private[spark] val GLOBAL_DRIVER_IDENTIFIER = "global-driver"
-
   private[spark] val SITE_DRIVER_IDENTIFIER_PREFIX = "site-driver"
 
   /**

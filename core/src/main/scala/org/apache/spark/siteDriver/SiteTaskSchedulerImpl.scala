@@ -23,17 +23,19 @@ import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.Set
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
+import scala.concurrent.duration._
 import scala.util.Random
 
 import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config
+import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler._
-import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler.TaskLocality.TaskLocality
 import org.apache.spark.scheduler.local.LocalSchedulerBackend
-import org.apache.spark.storage.BlockManagerId
+import org.apache.spark.storage.{BlockManagerId, BlockManagerMaster}
+import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util.{AccumulatorV2, ThreadUtils, Utils}
 
 /**
@@ -64,6 +66,7 @@ private[spark] class SiteTaskSchedulerImpl(
   def this(ssc: SiteContext) = this(ssc, ssc.conf.get(config.MAX_TASK_FAILURES))
 
   val sparkEnv: SparkEnv = ssc.env
+  val blockManagerMaster: BlockManagerMaster = ssc.env.blockManager.master
 
   val mapOutputTracker = sparkEnv.mapOutputTracker
 
@@ -423,8 +426,10 @@ private[spark] class SiteTaskSchedulerImpl(
         }
       }
     }
-    // TODO-lzp: no dag scheduler
-//    dagScheduler.executorHeartbeatReceived(execId, accumUpdatesWithTaskIds, blockManagerId)
+    // TODO-lzp: maybe to post listenerBus
+    blockManagerMaster.driverEndpoint.askWithRetry[Boolean](
+      BlockManagerHeartbeat(blockManagerId), new RpcTimeout(600.seconds, "BlockManagerHeartbeat")
+    )
     true
   }
 

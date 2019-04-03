@@ -25,16 +25,26 @@ import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.storage.BlockManagerMessages._
-import org.apache.spark.util.{RpcUtils, ThreadUtils}
+import org.apache.spark.util.{RpcUtils, ThreadUtils, Utils}
 
 private[spark]
 class BlockManagerMaster(
+    val execId: String,
     var driverEndpoint: RpcEndpointRef,
-    conf: SparkConf,
-    isDriver: Boolean)
+    conf: SparkConf)
   extends Logging {
 
   val timeout = RpcUtils.askRpcTimeout(conf)
+
+  var gdriverRef: RpcEndpointRef = _
+
+  def setGlobalDriverEndpoint(ref: RpcEndpointRef): Unit = {
+    if (gdriverRef == null) {
+      gdriverRef = ref
+    } else {
+      throw new SparkException("the gdriverRef has been setted")
+    }
+  }
 
   /** Remove a dead executor from the driver endpoint. This is only called on the driver side. */
   def removeExecutor(execId: String) {
@@ -64,10 +74,17 @@ class BlockManagerMaster(
       blockManagerId: BlockManagerId,
       maxMemSize: Long,
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
-    logInfo(s"Registering BlockManager $blockManagerId")
+    val obj = if (Utils.isGDriver(execId)) "GlobalBlockManager" else "SiteBlockManager"
+    logInfo(s"Registering BlockManager $blockManagerId for $obj")
     val updatedId = driverEndpoint.askWithRetry[BlockManagerId](
       RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint))
-    logInfo(s"Registered BlockManager $updatedId")
+    logInfo(s"Registered BlockManager $updatedId for $obj")
+    if (gdriverRef != null && Utils.isSDriver(execId)) {
+      logInfo(s"Registering BlockManager $blockManagerId for GlobalBlockManager")
+      gdriverRef.askWithRetry[BlockManagerId](
+        RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint))
+      logInfo(s"Registered BlockManager $updatedId for GlobalBlockManager")
+    }
     updatedId
   }
 
@@ -233,7 +250,7 @@ class BlockManagerMaster(
 
   /** Stop the driver endpoint, called only on the Spark driver node */
   def stop() {
-    if (driverEndpoint != null && isDriver) {
+    if (driverEndpoint != null && (Utils.isGDriver(execId) || Utils.isSDriver(execId))) {
       tell(StopBlockManagerMaster)
       driverEndpoint = null
       logInfo("BlockManagerMaster stopped")
@@ -251,4 +268,5 @@ class BlockManagerMaster(
 
 private[spark] object BlockManagerMaster {
   val DRIVER_ENDPOINT_NAME = "BlockManagerMaster"
+  val GLOBAL_DRIVER_ENDPOINT_NAME = "BlockManagerGlobalMaster"
 }

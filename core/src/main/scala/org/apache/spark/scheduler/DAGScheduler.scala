@@ -961,13 +961,6 @@ class DAGScheduler(
     // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
     // will be posted, which should always come after a corresponding SparkListenerStageSubmitted
     // event.
-    stage match {
-      case s: ShuffleMapStage =>
-        outputCommitCoordinator.stageStart(stage = s.id, maxPartitionId = s.numPartitions - 1)
-      case s: ResultStage =>
-        outputCommitCoordinator.stageStart(
-          stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
-    }
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       stage match {
         case s: ShuffleMapStage =>
@@ -1131,13 +1124,6 @@ class DAGScheduler(
     val taskId = event.taskInfo.id
     val stageId = task.stageId
     val taskType = Utils.getFormattedClassName(task)
-
-    outputCommitCoordinator.taskCompleted(
-      stageId,
-      task.stageAttemptId,
-      task.partitionId,
-      event.taskInfo.attemptNumber, // this is a task attempt number
-      event.reason)
 
     // Reconstruct task metrics. Note: this may be null if the task has failed.
     val taskMetrics: TaskMetrics =
@@ -1437,9 +1423,6 @@ class DAGScheduler(
       logInfo(s"$stage (${stage.name}) failed in $serviceTime s due to ${errorMessage.get}")
     }
 
-    if (!willRetry) {
-      outputCommitCoordinator.stageEnd(stage.id)
-    }
     listenerBus.post(SparkListenerStageCompleted(stage.latestInfo))
     runningStages -= stage
   }

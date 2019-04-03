@@ -37,10 +37,11 @@ import org.apache.spark.util.{ThreadUtils, Utils}
  */
 private[spark]
 class BlockManagerMasterEndpoint(
+    execId: String,
     override val rpcEnv: RpcEnv,
     val isLocal: Boolean,
     conf: SparkConf,
-    listenerBus: LiveListenerBus)
+    listenerBus: Option[LiveListenerBus])
   extends ThreadSafeRpcEndpoint with Logging {
 
   // Mapping from block manager id to the block manager's information.
@@ -55,15 +56,16 @@ class BlockManagerMasterEndpoint(
   private val askThreadPool = ThreadUtils.newDaemonCachedThreadPool("block-manager-ask-thread-pool")
   private implicit val askExecutionContext = ExecutionContext.fromExecutorService(askThreadPool)
 
-  private val topologyMapper = {
+  // 这里考虑到, GlobalDriver上应该是没有拓扑信息的
+  private val topologyMapper: Option[TopologyMapper] = if (Utils.isSDriver(execId)) {
     val topologyMapperClassName = conf.get(
       "spark.storage.replication.topologyMapper", classOf[DefaultTopologyMapper].getName)
     val clazz = Utils.classForName(topologyMapperClassName)
     val mapper =
       clazz.getConstructor(classOf[SparkConf]).newInstance(conf).asInstanceOf[TopologyMapper]
     logInfo(s"Using $topologyMapperClassName for getting topology information")
-    mapper
-  }
+    Some(mapper)
+  } else None
 
   logInfo("BlockManagerMasterEndpoint up")
 
@@ -74,7 +76,7 @@ class BlockManagerMasterEndpoint(
     case _updateBlockInfo @
         UpdateBlockInfo(blockManagerId, blockId, storageLevel, deserializedSize, size) =>
       context.reply(updateBlockInfo(blockManagerId, blockId, storageLevel, deserializedSize, size))
-      listenerBus.post(SparkListenerBlockUpdated(BlockUpdatedInfo(_updateBlockInfo)))
+      listenerBus.foreach(_.post(SparkListenerBlockUpdated(BlockUpdatedInfo(_updateBlockInfo))))
 
     case GetLocations(blockId) =>
       context.reply(getLocations(blockId))
@@ -208,7 +210,8 @@ class BlockManagerMasterEndpoint(
         blockLocations.remove(blockId)
       }
     }
-    listenerBus.post(SparkListenerBlockManagerRemoved(System.currentTimeMillis(), blockManagerId))
+    listenerBus.foreach(_.post(
+      SparkListenerBlockManagerRemoved(System.currentTimeMillis(), blockManagerId)))
     logInfo(s"Removing block manager $blockManagerId")
   }
 
@@ -326,7 +329,7 @@ class BlockManagerMasterEndpoint(
       idWithoutTopologyInfo.executorId,
       idWithoutTopologyInfo.host,
       idWithoutTopologyInfo.port,
-      topologyMapper.getTopologyForHost(idWithoutTopologyInfo.host))
+      topologyMapper.flatMap(_.getTopologyForHost(idWithoutTopologyInfo.host)))
 
     val time = System.currentTimeMillis()
     if (!blockManagerInfo.contains(id)) {
@@ -346,7 +349,7 @@ class BlockManagerMasterEndpoint(
       blockManagerInfo(id) = new BlockManagerInfo(
         id, System.currentTimeMillis(), maxMemSize, slaveEndpoint)
     }
-    listenerBus.post(SparkListenerBlockManagerAdded(time, id, maxMemSize))
+    listenerBus.foreach(_.post(SparkListenerBlockManagerAdded(time, id, maxMemSize)))
     id
   }
 

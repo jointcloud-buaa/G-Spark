@@ -2687,6 +2687,10 @@ private[spark] object Utils extends Logging {
     math.max(totalMb - 1024, Utils.DEFAULT_DRIVER_MEM_MB)
   }
 
+  def isGDriver(execId: String): Boolean = execId == SparkContext.GLOBAL_DRIVER_IDENTIFIER
+  def isSDriver(execId: String): Boolean = execId.startsWith(
+    SparkContext.SITE_DRIVER_IDENTIFIER_PREFIX
+  )
 }
 
 private[util] object CallerContext extends Logging {

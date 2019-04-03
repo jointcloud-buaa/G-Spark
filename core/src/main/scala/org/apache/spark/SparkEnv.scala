@@ -156,7 +156,6 @@ object SparkEnv extends Logging {
   /**
    * Create a SparkEnv for the global driver.
    */
-  // TODO-lzp: Global Driver应该没有outputCommitCoordinator
   private[spark] def createGlobalDriverEnv(
     conf: SparkConf,
     isLocal: Boolean,
@@ -175,7 +174,7 @@ object SparkEnv extends Logging {
     } else {
       None
     }
-    val gdriverId = SparkContext.GLOBAL_DRIVER_IDENTIFIER
+    val execId = SparkContext.GLOBAL_DRIVER_IDENTIFIER  // global-driver
 
     // only global driver has listenerBus
     assert(listenerBus != null, "Attempted to create driver SparkEnv with null listener bus!")
@@ -230,23 +229,23 @@ object SparkEnv extends Logging {
     val blockTransferService =
       new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
         blockManagerPort, numCores)
-    logInfo(s"Registering ${BlockManagerMaster.DRIVER_ENDPOINT_NAME}")
-    val blockManagerMasterEndpointRef = rpcEnv.setupEndpoint(
-      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
-      new BlockManagerMasterEndpoint(rpcEnv, isLocal, conf, listenerBus)
+    logInfo(s"Registering ${BlockManagerMaster.GLOBAL_DRIVER_ENDPOINT_NAME}")
+    val blockManagerGlobalMasterEndpointRef = rpcEnv.setupEndpoint(
+      BlockManagerMaster.GLOBAL_DRIVER_ENDPOINT_NAME,
+      new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, Some(listenerBus))
     )
-    val blockManagerMaster = new BlockManagerMaster(
-      blockManagerMasterEndpointRef, conf, true
+    val blockManagerGlobalMaster = new BlockManagerMaster(
+      execId, blockManagerGlobalMasterEndpointRef, conf
     )
-    val blockManager = new BlockManager(gdriverId, rpcEnv,
-      blockManagerMaster, serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
-      blockTransferService, securityManager, numCores)
+    val blockManager = new BlockManager(execId, rpcEnv,
+      blockManagerGlobalMaster, serializerManager, conf, memoryManager, mapOutputTracker,
+      shuffleManager, blockTransferService, securityManager, numCores)
 
     // ==
     val metricsSystem = MetricsSystem.createMetricsSystem("driver", conf, securityManager)
 
     val envInstance = new SparkEnv(
-      gdriverId,
+      execId,
       rpcEnv,
       serializer,
       closureSerializer,
@@ -266,10 +265,9 @@ object SparkEnv extends Logging {
     envInstance
   }
 
-  // TODO-lzp
   private[spark] def createSiteDriverEnv(
     conf: SparkConf,
-    siteDriverId: String,
+    execId: String,  // siteDriverId
     hostname: String,
     // TODO-lzp: 如果SiteDriver是与应用无关的服务, 则可以为0
     numCores: Int,
@@ -324,21 +322,25 @@ object SparkEnv extends Logging {
     val blockManagerPort = conf.get(SITE_DRIVER_BLOCK_MANAGER_PORT)
     val blockTransferService = new NettyBlockTransferService(
       conf, securityManager, hostname, hostname, blockManagerPort, numCores)
-    // TODO-lzp: 这里并不正确, 并非认真考虑BlockManager的三层
-    val blockManagerMasterRef = RpcUtils.makeRef(
-      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
+    val blockManagerGlobalMasterRef = RpcUtils.makeRef(
+      BlockManagerMaster.GLOBAL_DRIVER_ENDPOINT_NAME,
       conf.get("spark.globalDriver.host", "localhost"),
       conf.getInt("spark.globalDriver.port", 7077),
       rpcEnv
     )
-    // TODO-lzp: about the isDriver
-    val blockManagerMaster = new BlockManagerMaster(blockManagerMasterRef, conf, false)
-    val blockManager = new BlockManager(siteDriverId, rpcEnv, blockManagerMaster,
+    val blockManagerMasterRef = rpcEnv.setupEndpoint(
+      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
+      // TODO-lzp: None, 这里要考虑是否要在SiteDriver上启动ListenerBus
+      new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, None)
+    )
+    val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
+    blockManagerMaster.setGlobalDriverEndpoint(blockManagerGlobalMasterRef)
+    val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numCores)
 
     // TODO-lzp: 待进一步确定
-    conf.set("spark.executor.id", siteDriverId)
+    conf.set("spark.executor.id", execId)
     val metricsSystem = MetricsSystem.createMetricsSystem("siteDriver", conf, securityManager)
     metricsSystem.start()
 
@@ -351,7 +353,7 @@ object SparkEnv extends Logging {
     outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
 
     val envInstance = new SparkEnv(
-      siteDriverId,
+      execId,
       rpcEnv,
       serializer,
       closureSerializer,
@@ -381,7 +383,7 @@ object SparkEnv extends Logging {
    */
   private[spark] def createExecutorEnv(
       conf: SparkConf,
-      executorId: String,
+      execId: String,
       hostname: String,
       port: Int,
       numCores: Int,
@@ -448,12 +450,12 @@ object SparkEnv extends Logging {
 //      rpcEnv
 //    )
     // TODO-lzp: about the isDriver
-    val blockManagerMaster = new BlockManagerMaster(blockManagerMasterRef, conf, false)
-    val blockManager = new BlockManager(executorId, rpcEnv, blockManagerMaster,
+    val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
+    val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numCores)
 
-    conf.set("spark.executor.id", executorId)
+    conf.set("spark.executor.id", execId)
     val metricsSystem = MetricsSystem.createMetricsSystem("executor", conf, securityManager)
     metricsSystem.start()
 
@@ -467,7 +469,7 @@ object SparkEnv extends Logging {
     outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
 
     val envInstance = new SparkEnv(
-      executorId,
+      execId,
       rpcEnv,
       serializer,
       closureSerializer,
