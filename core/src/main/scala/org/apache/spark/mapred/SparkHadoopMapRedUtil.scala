@@ -68,7 +68,7 @@ object SparkHadoopMapRedUtil extends Logging {
       }
 
       if (shouldCoordinateWithDriver) {
-        val outputCommitCoordinator = SparkEnv.get.outputCommitCoordinator
+        val outputCommitCoordinator = SparkEnv.get.outputCommitCoordinator.get
         val ctx = TaskContext.get()
         val canCommit = outputCommitCoordinator.canCommit(ctx.stageId(), ctx.stageAttemptNumber(),
           splitId, ctx.attemptNumber())

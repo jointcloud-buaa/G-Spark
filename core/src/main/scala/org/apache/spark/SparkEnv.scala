@@ -66,7 +66,8 @@ class SparkEnv (
     val securityManager: SecurityManager,
     val metricsSystem: MetricsSystem,
     val memoryManager: MemoryManager,
-    val outputCommitCoordinator: OutputCommitCoordinator,
+    // the global driver does not need a commit coordinator
+    val outputCommitCoordinator: Option[OutputCommitCoordinator],
     val conf: SparkConf) extends Logging {
 
   private[spark] var isStopped = false
@@ -89,7 +90,7 @@ class SparkEnv (
       blockManager.stop()
       blockManager.master.stop()
       metricsSystem.stop()
-      outputCommitCoordinator.stop()
+      outputCommitCoordinator.foreach(_.stop())
       rpcEnv.shutdown()
       rpcEnv.awaitTermination()
 
@@ -155,12 +156,13 @@ object SparkEnv extends Logging {
   /**
    * Create a SparkEnv for the global driver.
    */
+  // TODO-lzp: Global Driver应该没有outputCommitCoordinator
   private[spark] def createGlobalDriverEnv(
     conf: SparkConf,
     isLocal: Boolean,
     listenerBus: LiveListenerBus,
-    numCores: Int,
-    mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
+    numCores: Int
+    ): SparkEnv = {
     assert(conf.contains(GLOBAL_DRIVER_HOST_ADDRESS),
       s"${GLOBAL_DRIVER_HOST_ADDRESS.key} is not set on the driver!")
     assert(conf.contains("spark.globalDriver.port"),
@@ -243,16 +245,6 @@ object SparkEnv extends Logging {
     // ==
     val metricsSystem = MetricsSystem.createMetricsSystem("driver", conf, securityManager)
 
-    // ==
-    val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
-      new OutputCommitCoordinator(conf, true)  // mock表示模拟, 应该是用于测试
-    }
-    val occName = "OutputCommitCoordinator"
-    logInfo(s"Registering $occName")
-    val outputCommitCoordinatorRef = rpcEnv.setupEndpoint(occName,
-      new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
-    outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
-
     val envInstance = new SparkEnv(
       gdriverId,
       rpcEnv,
@@ -266,7 +258,7 @@ object SparkEnv extends Logging {
       securityManager,
       metricsSystem,
       memoryManager,
-      outputCommitCoordinator,
+      None,
       conf)
 
     val sparkFilesDir = Utils.createTempDir(Utils.getLocalDir(conf), "userFiles").getAbsolutePath
@@ -351,7 +343,7 @@ object SparkEnv extends Logging {
     metricsSystem.start()
 
     val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
-      new OutputCommitCoordinator(conf, false) }
+      new OutputCommitCoordinator(conf, true) }
     val occName = "OutputCommitCoordinator"
     logInfo(s"Registering $occName")
     val outputCommitCoordinatorRef = rpcEnv.setupEndpoint(
@@ -371,7 +363,7 @@ object SparkEnv extends Logging {
       securityManager,
       metricsSystem,
       memoryManager,
-      outputCommitCoordinator,
+      Some(outputCommitCoordinator),
       conf)
 
     // TODO-lzp: 设置目录, 用于存放通过SparkContext#addFile()添加的文件, 不确定
@@ -487,7 +479,7 @@ object SparkEnv extends Logging {
       securityManager,
       metricsSystem,
       memoryManager,
-      outputCommitCoordinator,
+      Some(outputCommitCoordinator),
       conf)
 
     SparkEnv.set(envInstance)
