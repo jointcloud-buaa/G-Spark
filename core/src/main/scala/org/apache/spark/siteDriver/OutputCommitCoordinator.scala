@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.scheduler
+package org.apache.spark.siteDriver
 
 import scala.collection.mutable
 
@@ -109,7 +109,7 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
    * @param maxPartitionId the maximum partition id that could appear in this stage's tasks (i.e.
    *                       the maximum possible value of `context.partitionId`).
    */
-  private[scheduler] def stageStart(stage: Int, maxPartitionId: Int): Unit = synchronized {
+  private[siteDriver] def stageStart(stage: Int, maxPartitionId: Int): Unit = synchronized {
     authorizedCommittersByStage.get(stage) match {
       case Some(committers) =>
         require(committers.length == maxPartitionId + 1)
@@ -122,12 +122,12 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
   }
 
   // Called by DAGScheduler
-  private[scheduler] def stageEnd(stage: Int): Unit = synchronized {
+  private[siteDriver] def stageEnd(stage: Int): Unit = synchronized {
     authorizedCommittersByStage.remove(stage)
   }
 
   // Called by DAGScheduler
-  private[scheduler] def taskCompleted(
+  private[siteDriver] def taskCompleted(
       stage: Int,
       stageAttempt: Int,
       partition: Int,
@@ -161,8 +161,8 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
     }
   }
 
-  // Marked private[scheduler] instead of private so this can be mocked in tests
-  private[scheduler] def handleAskPermissionToCommit(
+  // Marked private[siteDriver] instead of private so this can be mocked in tests
+  private[siteDriver] def handleAskPermissionToCommit(
       stage: Int,
       stageAttempt: Int,
       partition: Int,

@@ -14,26 +14,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.spark.siteDriver
 
-private[spark] trait SiteSchedulerBackend {
-  private val appId = "site-application-" + System.currentTimeMillis
+package org.apache.spark
 
-  def start(): Unit
+trait ComponentContext {
+  def conf: SparkConf
   def stop(): Unit
-  def reviveOffers(): Unit
-  def defaultParallelism(): Int
-
-  def killTask(taskId: Long, executorId: String, interruptThread: Boolean): Unit =
-    throw new UnsupportedOperationException
-
-  def isReady(): Boolean = true
-
-  def siteAppId(): String = appId
-  def siteAppAttemptId(): Option[String] = None
-
-  def getSiteDriverLogUrls: Option[Map[String, String]] = None
-
-  def reportClusterReady(): Unit
-
+  def stopInNewThread(): Unit
 }

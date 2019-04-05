@@ -18,6 +18,7 @@
 package org.apache.spark.scheduler
 
 import org.apache.spark.SparkContext
+import org.apache.spark.siteDriver.TaskScheduler
 
 /**
  * A cluster manager interface to plugin external scheduler.
@@ -38,7 +39,7 @@ private[spark] trait ExternalClusterManager {
    * @param masterURL the master URL
    * @return TaskScheduler that will be responsible for task handling
    */
-  def createTaskScheduler(sc: SparkContext, masterURL: String): GlobalTaskScheduler
+  def createTaskScheduler(sc: SparkContext, masterURL: String): TaskScheduler
 
   /**
    * Create a scheduler backend for the given SparkContext and scheduler. This is
@@ -50,7 +51,7 @@ private[spark] trait ExternalClusterManager {
    */
   def createSchedulerBackend(sc: SparkContext,
       masterURL: String,
-      scheduler: GlobalTaskScheduler): SchedulerBackend
+      scheduler: TaskScheduler): SchedulerBackend
 
   /**
    * Initialize task scheduler and backend scheduler. This is called after the
@@ -58,5 +59,5 @@ private[spark] trait ExternalClusterManager {
    * @param scheduler TaskScheduler that will be responsible for task handling
    * @param backend SchedulerBackend that works with a TaskScheduler
    */
-  def initialize(scheduler: GlobalTaskScheduler, backend: SchedulerBackend): Unit
+  def initialize(scheduler: TaskScheduler, backend: SchedulerBackend): Unit
 }

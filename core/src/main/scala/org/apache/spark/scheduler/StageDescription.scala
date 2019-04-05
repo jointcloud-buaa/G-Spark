@@ -14,26 +14,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.spark.siteDriver
+package org.apache.spark.scheduler
 
-private[spark] trait SiteSchedulerBackend {
-  private val appId = "site-application-" + System.currentTimeMillis
+import java.nio.ByteBuffer
 
-  def start(): Unit
-  def stop(): Unit
-  def reviveOffers(): Unit
-  def defaultParallelism(): Int
+import org.apache.spark.util.SerializableBuffer
 
-  def killTask(taskId: Long, executorId: String, interruptThread: Boolean): Unit =
-    throw new UnsupportedOperationException
+private[spark] class StageDescription(
+  val stageId: Long,
+  val sdriverId: String,
+  // TODO-lzp: 考虑下index??
+  _serializedStage: ByteBuffer
+) extends Serializable {
 
-  def isReady(): Boolean = true
-
-  def siteAppId(): String = appId
-  def siteAppAttemptId(): Option[String] = None
-
-  def getSiteDriverLogUrls: Option[Map[String, String]] = None
-
-  def reportClusterReady(): Unit
+  private val buffer = new SerializableBuffer(_serializedStage)
+  def serializedStage: ByteBuffer = buffer.value
 
 }

@@ -20,7 +20,7 @@ import org.apache.spark.scheduler.{ExecutorLossReason, TaskSet}
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.AccumulatorV2
 
-private[spark] trait SiteTaskScheduler {
+private[spark] trait TaskScheduler {
 
   def start(): Unit
   def stop(): Unit
@@ -31,6 +31,8 @@ private[spark] trait SiteTaskScheduler {
 
   def cancelTasks(stageId: Int, interruptThread: Boolean): Unit
 
+  def setStageScheduler(stageScheduler: StageScheduler): Unit
+
   // 接受来自executor的心跳
   def executorHeartbeatReceived(
     execId: String,
@@ -40,6 +42,7 @@ private[spark] trait SiteTaskScheduler {
   def executorLost(executorId: String, reason: ExecutorLossReason): Unit
 
   def siteAppId(): String
+  def siteAppAttemptId(): Option[String]
 
   def defaultParallelism(): Int
 }

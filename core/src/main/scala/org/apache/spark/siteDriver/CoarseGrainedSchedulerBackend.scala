@@ -30,11 +30,11 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
-import org.apache.spark.siteDriver.CoarseGrainedSiteSchedulerBackend.ENDPOINT_NAME
+import org.apache.spark.siteDriver.CoarseGrainedSchedulerBackend.ENDPOINT_NAME
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
 
-class CoarseGrainedSiteSchedulerBackend(
-  scheduler: SiteTaskSchedulerImpl, val rpcEnv: RpcEnv
+class CoarseGrainedSchedulerBackend(
+  scheduler: TaskSchedulerImpl, val rpcEnv: RpcEnv
 ) extends ExecutorAllocationClient with SiteSchedulerBackend with Logging {
 
   // Use an atomic variable to track total number of cores in the cluster for simplicity and speed
@@ -211,7 +211,7 @@ class CoarseGrainedSiteSchedulerBackend(
             cores, cores, logUrls)
           // This must be synchronized because variables mutated
           // in this block are read when requesting executors
-          CoarseGrainedSiteSchedulerBackend.this.synchronized {
+          CoarseGrainedSchedulerBackend.this.synchronized {
             executorDataMap.put(executorId, data)
             if (currentExecutorIdCounter < executorId.toInt) {
               currentExecutorIdCounter = executorId.toInt
@@ -330,7 +330,7 @@ class CoarseGrainedSiteSchedulerBackend(
           // This must be synchronized because variables mutated
           // in this block are read when requesting executors
           // killed表示此Executor是否是被killed掉的
-          val killed = CoarseGrainedSiteSchedulerBackend.this.synchronized {
+          val killed = CoarseGrainedSchedulerBackend.this.synchronized {
             addressToExecutorId -= executorInfo.executorAddress
             executorDataMap -= executorId
             executorsPendingLossReason -= executorId
@@ -362,7 +362,7 @@ class CoarseGrainedSiteSchedulerBackend(
      * @return Whether executor should be disabled
      */
     protected def disableExecutor(executorId: String): Boolean = {
-      val shouldDisable = CoarseGrainedSiteSchedulerBackend.this.synchronized {
+      val shouldDisable = CoarseGrainedSchedulerBackend.this.synchronized {
         if (executorIsAlive(executorId)) {
           executorsPendingLossReason += executorId
           true
@@ -729,6 +729,6 @@ class CoarseGrainedSiteSchedulerBackend(
   }
 }
 
-object CoarseGrainedSiteSchedulerBackend {
+object CoarseGrainedSchedulerBackend {
   val ENDPOINT_NAME = "CoarseGrainedSiteScheduler"
 }

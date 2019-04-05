@@ -28,11 +28,11 @@ import org.apache.spark.deploy.client.{StandaloneAppClient, StandaloneAppClientL
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.{LauncherBackend, SparkAppHandle}
 import org.apache.spark.rpc.RpcEndpointAddress
-import org.apache.spark.scheduler.{GlobalTaskSchedulerImpl, SiteDriverExited, SiteDriverLossReason, SiteDriverSlaveLost}
+import org.apache.spark.scheduler.{DAGScheduler, SiteDriverExited, SiteDriverLossReason, SiteDriverSlaveLost}
 import org.apache.spark.util.Utils
 
 private[spark] class StandaloneGlobalSchedulerBackend(
-  scheduler: GlobalTaskSchedulerImpl,
+  scheduler: DAGScheduler,
   sc: SparkContext,
   masters: Array[String]
 ) extends CoarseGrainedGlobalSchedulerBackend(scheduler, sc.env.rpcEnv)

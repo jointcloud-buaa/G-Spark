@@ -1256,26 +1256,7 @@ private[spark] object Utils extends Logging {
    * user-started JVM process completely; in contrast, tryOrExit is to be called in the
    * spark-started JVM process .
    */
-  def tryOrStopSparkContext(sc: SparkContext)(block: => Unit) {
-    try {
-      block
-    } catch {
-      case e: ControlThrowable => throw e
-      case t: Throwable =>
-        val currentThreadName = Thread.currentThread().getName
-        if (sc != null) {
-          logError(s"uncaught error in thread $currentThreadName, stopping SparkContext", t)
-          sc.stopInNewThread()
-        }
-        if (!NonFatal(t)) {
-          logError(s"throw uncaught fatal error in thread $currentThreadName", t)
-          throw t
-        }
-    }
-  }
-
-  // TODO-lzp: maybe merge with up method, to extends a closable Context trait
-  def tryOrStopSiteContext(sc: SiteContext)(block: => Unit) {
+  def tryOrStopContext(sc: ComponentContext)(block: => Unit) {
     try {
       block
     } catch {

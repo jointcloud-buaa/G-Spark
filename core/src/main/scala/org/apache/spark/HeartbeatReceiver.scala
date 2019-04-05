@@ -43,7 +43,7 @@ private[spark] case class Heartbeat(
  * An event that SparkContext uses to notify HeartbeatReceiver that SparkContext.taskScheduler is
  * created.
  */
-private[spark] case object TaskSchedulerIsSet
+private[spark] case object DAGSchedulerIsSet
 
 private[spark] case object ExpireDeadHosts
 
@@ -67,7 +67,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
 
   override val rpcEnv: RpcEnv = sc.env.rpcEnv
 
-  private[spark] var scheduler: GlobalTaskScheduler = _
+  private[spark] var scheduler: DAGScheduler = _
 
   // executor ID -> timestamp of when the last heartbeat from this executor was received
   private val executorLastSeen = new mutable.HashMap[String, Long]
@@ -112,8 +112,8 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
     case ExecutorRemoved(executorId) =>
       executorLastSeen.remove(executorId)
       context.reply(true)
-    case TaskSchedulerIsSet =>
-      scheduler = sc.taskScheduler
+    case DAGSchedulerIsSet =>
+      scheduler = sc.dagScheduler
       context.reply(true)
     case ExpireDeadHosts =>
       expireDeadHosts()

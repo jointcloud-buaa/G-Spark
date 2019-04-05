@@ -70,7 +70,7 @@ import org.apache.spark.util._
  * @param config a Spark Config object describing the application configuration. Any settings in
  *   this config overrides the default configs as well as system properties.
  */
-class SparkContext(config: SparkConf) extends Logging {
+class SparkContext(config: SparkConf) extends ComponentContext with Logging {
 
   // The call site where this SparkContext was constructed.
   private val creationSite: CallSite = Utils.getCallSite()
@@ -204,7 +204,6 @@ class SparkContext(config: SparkConf) extends Logging {
   private var _executorMemory: Int = _
   private var _siteDriverMemory: Int = _
   private var _schedulerBackend: GlobalSchedulerBackend = _
-  private var _taskScheduler: GlobalTaskScheduler = _
   private var _heartbeatReceiver: RpcEndpointRef = _
   @volatile private var _dagScheduler: DAGScheduler = _
   private var _applicationId: String = _
@@ -222,7 +221,7 @@ class SparkContext(config: SparkConf) extends Logging {
    | context.                                                                              |
    * ------------------------------------------------------------------------------------- */
 
-  private[spark] def conf: SparkConf = _conf
+  override def conf: SparkConf = _conf
 
   /**
    * Return a copy of this SparkContext's configuration. The configuration ''cannot'' be
@@ -298,11 +297,6 @@ class SparkContext(config: SparkConf) extends Logging {
   val sparkUser = Utils.getCurrentUserName()
 
   private[spark] def schedulerBackend: GlobalSchedulerBackend = _schedulerBackend
-
-  private[spark] def taskScheduler: GlobalTaskScheduler = _taskScheduler
-  private[spark] def taskScheduler_=(ts: GlobalTaskScheduler): Unit = {
-    _taskScheduler = ts
-  }
 
   private[spark] def dagScheduler: DAGScheduler = _dagScheduler
   private[spark] def dagScheduler_=(ds: DAGScheduler): Unit = {
@@ -508,18 +502,17 @@ class SparkContext(config: SparkConf) extends Logging {
       HeartbeatReceiver.ENDPOINT_NAME, new HeartbeatReceiver(this))
 
     // Create and start the scheduler
-    val (sched, ts) = SparkContext.createTaskScheduler(this, master, deployMode)
+    val (sched, dag) = SparkContext.createTaskScheduler(this, master, deployMode)
     _schedulerBackend = sched
-    _taskScheduler = ts
-    _dagScheduler = new DAGScheduler(this)
-    _heartbeatReceiver.ask[Boolean](TaskSchedulerIsSet)
+    _dagScheduler = dag
+    _heartbeatReceiver.ask[Boolean](DAGSchedulerIsSet)
 
     // start TaskScheduler after taskScheduler sets DAGScheduler reference in DAGScheduler's
     // constructor
-    _taskScheduler.start()
+    _dagScheduler.start()
 
-    _applicationId = _taskScheduler.applicationId()
-    _applicationAttemptId = taskScheduler.applicationAttemptId()
+    _applicationId = _dagScheduler.applicationId()
+    _applicationAttemptId = dagScheduler.applicationAttemptId()
     _conf.set("spark.app.id", _applicationId)
     if (_conf.getBoolean("spark.ui.reverseProxy", false)) {
       System.setProperty("spark.ui.proxyBase", "/proxy/" + _applicationId)
@@ -574,7 +567,7 @@ class SparkContext(config: SparkConf) extends Logging {
     postApplicationStart()
 
     // Post init
-    _taskScheduler.postStartHook()
+    _dagScheduler.postStartHook()
     _env.metricsSystem.registerSource(_dagScheduler.metricsSource)
     _env.metricsSystem.registerSource(new BlockManagerSource(_env.blockManager))
     _executorAllocationManager.foreach { e =>
@@ -1631,7 +1624,7 @@ class SparkContext(config: SparkConf) extends Logging {
   def getAllPools: Seq[Schedulable] = {
     assertNotStopped()
     // TODO(xiajunluan): We should take nested pools into account
-    taskScheduler.rootPool.schedulableQueue.asScala.toSeq
+    dagScheduler.rootPool.schedulableQueue.asScala.toSeq
   }
 
   /**
@@ -1641,7 +1634,7 @@ class SparkContext(config: SparkConf) extends Logging {
   @DeveloperApi
   def getPoolForName(pool: String): Option[Schedulable] = {
     assertNotStopped()
-    Option(taskScheduler.rootPool.schedulableNameToSchedulable.get(pool))
+    Option(dagScheduler.rootPool.schedulableNameToSchedulable.get(pool))
   }
 
   /**
@@ -1649,7 +1642,7 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   def getSchedulingMode: SchedulingMode.SchedulingMode = {
     assertNotStopped()
-    taskScheduler.schedulingMode
+    dagScheduler.schedulingMode
   }
 
   /**
@@ -1740,7 +1733,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * may wait for some internal threads to finish. It's better to use this method to stop
    * SparkContext instead.
    */
-  private[spark] def stopInNewThread(): Unit = {
+  override def stopInNewThread(): Unit = {
     new Thread("stop-spark-context") {
       setDaemon(true)
 
@@ -1759,7 +1752,7 @@ class SparkContext(config: SparkConf) extends Logging {
   /**
    * Shut down the SparkContext.
    */
-  def stop(): Unit = {
+  override def stop(): Unit = {
     if (LiveListenerBus.withinListenerThread.value) {
       throw new SparkException(
         s"Cannot stop SparkContext within listener thread of ${LiveListenerBus.name}")
@@ -1814,7 +1807,6 @@ class SparkContext(config: SparkConf) extends Logging {
     Utils.tryLogNonFatalError {
       _progressBar.foreach(_.stop())
     }
-    _taskScheduler = null
     // TODO: Cache.stop()?
     if (_env != null) {
       Utils.tryLogNonFatalError {
@@ -2106,7 +2098,7 @@ class SparkContext(config: SparkConf) extends Logging {
   /** Default level of parallelism to use when not given by user (e.g. parallelize and makeRDD). */
   def defaultParallelism: Int = {
     assertNotStopped()
-    taskScheduler.defaultParallelism
+    dagScheduler.defaultParallelism
   }
 
   /**
@@ -2195,7 +2187,7 @@ class SparkContext(config: SparkConf) extends Logging {
 
   /** Post the environment update event once the task scheduler is ready */
   private def postEnvironmentUpdate() {
-    if (taskScheduler != null) {
+    if (dagScheduler != null) {
       val schedulingMode = getSchedulingMode.toString
       val addedJarPaths = addedJars.keys.toSeq
       val addedFilePaths = addedFiles.keys.toSeq
@@ -2472,7 +2464,7 @@ object SparkContext extends Logging {
   private def createTaskScheduler(
       sc: SparkContext,
       master: String,
-      deployMode: String): (GlobalSchedulerBackend, GlobalTaskScheduler) = {
+      deployMode: String): (GlobalSchedulerBackend, DAGScheduler) = {
     import SparkMasterRegex._
 
     // When running locally, don't try to re-execute tasks on failure.
@@ -2508,11 +2500,12 @@ object SparkContext extends Logging {
 //        (backend, scheduler)
 
       case SPARK_REGEX(sparkUrl) =>
-        val scheduler = new GlobalTaskSchedulerImpl(sc)
+//        val scheduler = new GlobalTaskSchedulerImpl(sc)
+        val dagSched = new DAGScheduler(sc)
         val masterUrls = sparkUrl.split(",").map("spark://" + _)
-        val backend = new StandaloneGlobalSchedulerBackend(scheduler, sc, masterUrls)
-        scheduler.initialize(backend)
-        (backend, scheduler)
+        val backend = new StandaloneGlobalSchedulerBackend(dagSched, sc, masterUrls)
+        dagSched.initialize(backend)
+        (backend, dagSched)
 
 //      case LOCAL_CLUSTER_REGEX(numSlaves, coresPerSlave, memoryPerSlave) =>
 //        // Check to make sure memory requested <= memoryPerSlave. Otherwise Spark will just hang.

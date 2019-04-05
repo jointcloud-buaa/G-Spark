@@ -54,19 +54,20 @@ import org.apache.spark.util.CallSite
  * @param callSite Location in the user program associated with this stage: either where the target
  *   RDD was created, for a shuffle map stage, or where the action for a result stage was called.
  */
-private[scheduler] abstract class Stage(
+// TODO-lzp: 这里改动了下访问范围, 从scheduler改为spark, 为了便于siteDriver访问
+private[spark] abstract class Stage(
     val id: Int,
     val rdd: RDD[_],
     val numTasks: Int,
-    val parents: List[Stage],
-    val firstJobId: Int,
+    @transient val parents: List[Stage],
+    @transient val firstJobId: Int,
     val callSite: CallSite)
   extends Logging {
 
   val numPartitions = rdd.partitions.length
 
   /** Set of jobs that this stage belongs to. */
-  val jobIds = new HashSet[Int]
+  @transient val jobIds = new HashSet[Int]
 
   val pendingPartitions = new HashSet[Int]
 
@@ -92,7 +93,7 @@ private[scheduler] abstract class Stage(
    */
   private val fetchFailedAttemptIds = new HashSet[Int]
 
-  private[scheduler] def clearFailures() : Unit = {
+  private[spark] def clearFailures() : Unit = {
     fetchFailedAttemptIds.clear()
   }
 
@@ -102,7 +103,7 @@ private[scheduler] abstract class Stage(
    * This method updates the running set of failed stage attempts and returns
    * true if the number of failures exceeds the allowable number of failures.
    */
-  private[scheduler] def failedOnFetchAndShouldAbort(stageAttemptId: Int): Boolean = {
+  private[spark] def failedOnFetchAndShouldAbort(stageAttemptId: Int): Boolean = {
     fetchFailedAttemptIds.add(stageAttemptId)
     fetchFailedAttemptIds.size >= Stage.MAX_CONSECUTIVE_FETCH_FAILURES
   }
@@ -132,7 +133,7 @@ private[scheduler] abstract class Stage(
   def findMissingPartitions(): Seq[Int]
 }
 
-private[scheduler] object Stage {
+private[spark] object Stage {
   // The number of consecutive failures allowed before a stage is aborted
   val MAX_CONSECUTIVE_FETCH_FAILURES = 4
 }

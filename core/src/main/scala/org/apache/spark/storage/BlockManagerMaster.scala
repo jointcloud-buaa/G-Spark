@@ -267,6 +267,6 @@ class BlockManagerMaster(
 }
 
 private[spark] object BlockManagerMaster {
-  val DRIVER_ENDPOINT_NAME = "BlockManagerMaster"
+  val DRIVER_ENDPOINT_NAME = "BlockManagerSiteMaster"
   val GLOBAL_DRIVER_ENDPOINT_NAME = "BlockManagerGlobalMaster"
 }

@@ -16,27 +16,34 @@
  */
 package org.apache.spark.siteDriver
 
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
 import scala.collection.mutable.{HashMap, HashSet}
+import scala.reflect.{classTag, ClassTag}
 import scala.util.control.NonFatal
 
-import org.apache.spark.{SparkConf, SparkEnv}
+import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv}
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
+import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef}
+import org.apache.spark.scheduler.LiveListenerBus
 import org.apache.spark.util.Utils
 
 private[spark] class SiteContext(
   config: SparkConf, val ioEncryptionKey: Option[Array[Byte]]
-) extends Logging {
+) extends ComponentContext with Logging {
 
   private var _conf: SparkConf = _
   private var _env: SparkEnv = _
-  private var _taskScheduler: SiteTaskScheduler = _
+  private var _taskScheduler: TaskScheduler = _
   private var _schedulerBackend: SiteSchedulerBackend = _
+  @volatile private var _stageScheduler: StageScheduler = _
   private var _heartbeatReceiver: RpcEndpointRef = _
+  private var _cleaner: Option[ContextCleaner] = None
 
   private var _siteAppId: String = _
+  private var _siteAppAttemptId: Option[String] = _
 
   // get from the SiteDriverWrapper's command argument
   private var _appId: String = _
@@ -53,21 +60,35 @@ private[spark] class SiteContext(
 
   val startTime: Long = System.currentTimeMillis()
 
+  def isLocal: Boolean = Utils.isLocalMaster(_conf)
+
   def isStopped: Boolean = stopped.get()
 
-  private[spark] def conf: SparkConf = _conf
+  private[spark] val listenerBus = new LiveListenerBus(this)
+
+  override def conf: SparkConf = _conf
 
   def getConf: SparkConf = conf.clone
 
   private[spark] def env: SparkEnv = _env
 
-  private[spark] def taskScheduler: SiteTaskScheduler = _taskScheduler
+  private[spark] def taskScheduler: TaskScheduler = _taskScheduler
 
   private[spark] def schedulerBackend: SiteSchedulerBackend = _schedulerBackend
+
+  private[spark] def cleaner: Option[ContextCleaner] = _cleaner
+
+  // 为_dagScheduler任务调度器设置getter/setter方法
+  private[spark] def stageScheduler: StageScheduler = _stageScheduler
+
+  private[spark] def stageScheduler_=(ds: StageScheduler): Unit = {
+    _stageScheduler = ds
+  }
 
   private[spark] def executorMemory: Int = _executorMemory
 
   def siteAppId: String = _siteAppId
+  def siteAppAttemptId: Option[String] = _siteAppAttemptId
   def siteMasterUrl: String = _siteMasterUrl
   def siteDriverId: String = _siteDriverId
   def globalDriverUrl: String = _gdriverUrl
@@ -128,24 +149,38 @@ private[spark] class SiteContext(
       ExecutorHeartbeatReceiver.ENDPOINT_NAME, new ExecutorHeartbeatReceiver(this)
     )
 
-    val scheduler = new SiteTaskSchedulerImpl(this)
-    val backend = new StandaloneSiteSchedulerBackend(scheduler, this, _siteMasterUrl)
+    val scheduler = new TaskSchedulerImpl(this)
+    val backend = new StandaloneSchedulerBackend(scheduler, this, _siteMasterUrl)
     scheduler.initialize(backend)
     _taskScheduler = scheduler
     _schedulerBackend = backend
+    _stageScheduler = new StageScheduler(this)
     _heartbeatReceiver.ask[Boolean](SiteTaskSchedulerIsSet)
 
     _taskScheduler.start()
 
     _siteAppId = _taskScheduler.siteAppId()
+    _siteAppAttemptId = taskScheduler.siteAppAttemptId()
+
     _conf.set("spark.siteApp.id", _siteAppId)
 
     // TODO-lzp: 涉及到BlockManager的修改
     env.blockManager.initialize(_siteAppId)
 
-//    env.metricsSystem.start()
+    // TODO-lzp: 传递给ContextCleaner的Context还略微有些麻烦
+//    _cleaner =
+//      if (_conf.getBoolean("spark.cleaner.referenceTracking", true)) {
+//        Some(new ContextCleaner(this))
+//      } else {
+//        None
+//      }
+    _cleaner = None
+    _cleaner.foreach(_.start())
+
+    //    env.metricsSystem.start()
 
     _taskScheduler.postStartHook() // 等待集群OK
+    _env.metricsSystem.registerSource(_stageScheduler.metricsSource)
     _schedulerBackend.reportClusterReady()
 
     // TODO-lzp: 一些关于SiteDriver的清理
@@ -163,10 +198,40 @@ private[spark] class SiteContext(
       }
   }
 
+  /**
+   * Broadcast a read-only variable to the cluster, returning a
+   * [[org.apache.spark.broadcast.Broadcast]] object for reading it in distributed functions.
+   * The variable will be sent to each cluster only once.
+   * 广播一个只读变量到集群, 并返回一个Broadcast对象, 用来在分布式函数中读取.
+   * 变量将发送到每个集群, 只一次
+   */
+  def broadcast[T: ClassTag](value: T): Broadcast[T] = {
+    assertNotStopped()
+    // 不能直接广播RDD, 只能调用collect再广播它的结果
+    require(!classOf[RDD[_]].isAssignableFrom(classTag[T].runtimeClass),
+      "Can not directly broadcast RDDs; instead, call collect() and broadcast the result.")
+    val bc = env.broadcastManager.newBroadcast[T](value, isLocal)
+    logInfo("Created broadcast " + bc.id)
+    cleaner.foreach(_.registerBroadcastForCleanup(bc))
+    bc
+  }
+
+  // TODO-lzp: 设立ListenerBus
+  private def setupAndStartListenerBus(): Unit = {
+
+  }
+
+  // 检测SparkContext未停止, 如果停止则抛出异常
+  private[spark] def assertNotStopped(): Unit = {
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot call methods on a stopped SparkContext.")
+    }
+  }
+
   // from executor heartbeat receiver
   private[spark] def killAndReplaceExecutor(executorId: String): Boolean = {
     schedulerBackend match {
-      case b: CoarseGrainedSiteSchedulerBackend =>
+      case b: CoarseGrainedSchedulerBackend =>
         b.killExecutors(Seq(executorId), replace = true, force = true).nonEmpty
       case _ =>
         logWarning("Killing executors is only supported in coarse-grained mode")
@@ -174,7 +239,7 @@ private[spark] class SiteContext(
     }
   }
 
-  private[spark] def stopInNewThread(): Unit = {
+  override def stopInNewThread(): Unit = {
     new Thread("stop-site-context") {
       setDaemon(true)
 
@@ -190,8 +255,8 @@ private[spark] class SiteContext(
     }.start()
   }
 
-  // TODO-lzp: 目前只是比较粗略
-  def stop(): Unit = {
+  // TODO-lzp: 目前只是比较粗
+  override def stop(): Unit = {
     if (!stopped.compareAndSet(false, true)) {
       logInfo("SiteContext already stopped")
       return
@@ -202,7 +267,20 @@ private[spark] class SiteContext(
         env.rpcEnv.stop(_heartbeatReceiver)
       }
     }
+    Utils.tryLogNonFatalError {
+      _cleaner.foreach(_.stop())
+    }
+
+    if (_stageScheduler != null) {
+      Utils.tryLogNonFatalError {
+        _stageScheduler.stop()
+      }
+      _stageScheduler = null
+    }
 
     logInfo("Successfully stopped SiteContext")
   }
+}
+
+object SiteContext extends Logging {
 }

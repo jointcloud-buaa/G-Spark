@@ -34,18 +34,18 @@ import org.apache.spark.util.Utils
 /**
  * A [[SchedulerBackend]] implementation for Spark's standalone cluster manager.
  */
-private[spark] class StandaloneSiteSchedulerBackend(
-  scheduler: SiteTaskSchedulerImpl,
+private[spark] class StandaloneSchedulerBackend(
+  scheduler: TaskSchedulerImpl,
   ssc: SiteContext,
   siteMaster: String
-) extends CoarseGrainedSiteSchedulerBackend(scheduler, ssc.env.rpcEnv)
+) extends CoarseGrainedSchedulerBackend(scheduler, ssc.env.rpcEnv)
   with StandaloneSiteAppClientListener
   with Logging {
 
   private var client: StandaloneSiteAppClient = _
   private val stopping = new AtomicBoolean(false)
 
-  @volatile var shutdownCallback: StandaloneSiteSchedulerBackend => Unit = _
+  @volatile var shutdownCallback: StandaloneSchedulerBackend => Unit = _
   @volatile private var appId: String = _
 
   private val registrationBarrier = new Semaphore(0)
@@ -61,7 +61,7 @@ private[spark] class StandaloneSiteSchedulerBackend(
     val sdriverUrl = RpcEndpointAddress(
       ssc.conf.get("spark.siteDriver.host"),
       ssc.conf.get("spark.siteDriver.port").toInt,
-      CoarseGrainedSiteSchedulerBackend.ENDPOINT_NAME).toString
+      CoarseGrainedSchedulerBackend.ENDPOINT_NAME).toString
     val args = Seq(
       "--driver-url", sdriverUrl,
       "--executor-id", "{{EXECUTOR_ID}}",
@@ -171,8 +171,7 @@ private[spark] class StandaloneSiteSchedulerBackend(
     totalCoreCount.get() >= totalExpectedCores * minRegisteredRatio
   }
 
-  override def siteAppId(): String =
-    Option(appId).getOrElse {
+  override def siteAppId(): String = Option(appId).getOrElse {
       logWarning("Site Application ID is not initialized yet.")
       super.siteAppId()
     }

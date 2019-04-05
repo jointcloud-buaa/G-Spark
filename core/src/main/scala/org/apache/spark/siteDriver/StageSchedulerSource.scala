@@ -16,24 +16,18 @@
  */
 package org.apache.spark.siteDriver
 
-private[spark] trait SiteSchedulerBackend {
-  private val appId = "site-application-" + System.currentTimeMillis
+import com.codahale.metrics.{MetricRegistry, Timer}
 
-  def start(): Unit
-  def stop(): Unit
-  def reviveOffers(): Unit
-  def defaultParallelism(): Int
+import org.apache.spark.metrics.source.Source
 
-  def killTask(taskId: Long, executorId: String, interruptThread: Boolean): Unit =
-    throw new UnsupportedOperationException
+private[siteDriver] class StageSchedulerSource(val stageScheduler: StageScheduler) extends Source {
 
-  def isReady(): Boolean = true
+  override val metricRegistry = new MetricRegistry()
+  override val sourceName = "StageScheduler"
 
-  def siteAppId(): String = appId
-  def siteAppAttemptId(): Option[String] = None
+  // TODO-lzp: to register some metric
 
-  def getSiteDriverLogUrls: Option[Map[String, String]] = None
-
-  def reportClusterReady(): Unit
-
+  /** Timer that tracks the time to process messages in the DAGScheduler's event loop */
+  val messageProcessingTimer: Timer = metricRegistry.timer(
+    MetricRegistry.name("messageProcessingTime"))
 }

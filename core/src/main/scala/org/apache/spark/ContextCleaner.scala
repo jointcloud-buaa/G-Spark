@@ -175,7 +175,7 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
   }
 
   /** Keep cleaning RDD, shuffle, and broadcast state. */
-  private def keepCleaning(): Unit = Utils.tryOrStopSparkContext(sc) {
+  private def keepCleaning(): Unit = Utils.tryOrStopContext(sc) {
     while (!stopped) {
       try {
         val reference = Option(referenceQueue.remove(ContextCleaner.REF_QUEUE_POLL_TIMEOUT))

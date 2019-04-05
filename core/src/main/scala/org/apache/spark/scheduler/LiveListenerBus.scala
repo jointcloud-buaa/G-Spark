@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
 
 import scala.util.DynamicVariable
 
-import org.apache.spark.{SparkContext, SparkException}
+import org.apache.spark.{ComponentContext, SparkException}
 import org.apache.spark.internal.config._
 import org.apache.spark.util.Utils
 
@@ -33,7 +33,7 @@ import org.apache.spark.util.Utils
  * has started will events be actually propagated to all attached listeners. This listener bus
  * is stopped when `stop()` is called, and it will drop further events after stopping.
  */
-private[spark] class LiveListenerBus(val sparkContext: SparkContext) extends SparkListenerBus {
+private[spark] class LiveListenerBus(val sparkContext: ComponentContext) extends SparkListenerBus {
 
   self =>
 
@@ -74,7 +74,7 @@ private[spark] class LiveListenerBus(val sparkContext: SparkContext) extends Spa
 
   private val listenerThread = new Thread(name) {
     setDaemon(true)
-    override def run(): Unit = Utils.tryOrStopSparkContext(sparkContext) {
+    override def run(): Unit = Utils.tryOrStopContext(sparkContext) {
       LiveListenerBus.withinListenerThread.withValue(true) {
         while (true) {
           eventLock.acquire()

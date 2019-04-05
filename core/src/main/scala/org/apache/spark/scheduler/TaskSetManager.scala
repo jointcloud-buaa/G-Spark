@@ -30,7 +30,7 @@ import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.SchedulingMode._
-import org.apache.spark.siteDriver.SiteTaskSchedulerImpl
+import org.apache.spark.siteDriver.TaskSchedulerImpl
 import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, Utils}
 
 /**
@@ -49,7 +49,7 @@ import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, Utils}
  *                        task set will be aborted
  */
 private[spark] class TaskSetManager(
-    sched: SiteTaskSchedulerImpl,
+    sched: TaskSchedulerImpl,
     val taskSet: TaskSet,
     val maxTaskFailures: Int,
     clock: Clock = new SystemClock()) extends Schedulable with Logging {

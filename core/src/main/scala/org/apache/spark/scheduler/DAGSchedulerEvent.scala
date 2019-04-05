@@ -61,26 +61,7 @@ private[scheduler] case class JobGroupCancelled(groupId: String) extends DAGSche
 
 private[scheduler] case object AllJobsCancelled extends DAGSchedulerEvent
 
-private[scheduler]
-case class BeginEvent(task: Task[_], taskInfo: TaskInfo) extends DAGSchedulerEvent
-
-private[scheduler]
-case class GettingResultEvent(taskInfo: TaskInfo) extends DAGSchedulerEvent
-
-private[scheduler] case class CompletionEvent(
-    task: Task[_],
-    reason: TaskEndReason,
-    result: Any,
-    accumUpdates: Seq[AccumulatorV2[_, _]],
-    taskInfo: TaskInfo)
-  extends DAGSchedulerEvent
-
-private[scheduler] case class ExecutorAdded(execId: String, host: String) extends DAGSchedulerEvent
-
 private[scheduler] case class SiteDriverAdded(sdriverId: String, host: String)
-  extends DAGSchedulerEvent
-
-private[scheduler] case class ExecutorLost(execId: String, reason: ExecutorLossReason)
   extends DAGSchedulerEvent
 
 private[scheduler] case class SiteDriverLost(execId: String, reason: ExecutorLossReason)

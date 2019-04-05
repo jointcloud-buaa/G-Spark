@@ -31,7 +31,7 @@ import org.apache.spark.scheduler.cluster.CoarseGrainedGlobalSchedulerBackend._
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
 
 private[spark] class CoarseGrainedGlobalSchedulerBackend(
-  scheduler: GlobalTaskSchedulerImpl, val rpcEnv: RpcEnv
+  scheduler: DAGScheduler, val rpcEnv: RpcEnv
 ) extends GlobalSchedulerBackend with Logging {
 
   // Total number of site drivers that are currently registered

@@ -34,11 +34,12 @@ import org.apache.spark.memory.{MemoryManager, StaticMemoryManager, UnifiedMemor
 import org.apache.spark.metrics.MetricsSystem
 import org.apache.spark.network.netty.NettyBlockTransferService
 import org.apache.spark.rpc.{RpcEndpoint, RpcEndpointRef, RpcEnv}
-import org.apache.spark.scheduler.{LiveListenerBus, OutputCommitCoordinator}
-import org.apache.spark.scheduler.OutputCommitCoordinator.OutputCommitCoordinatorEndpoint
+import org.apache.spark.scheduler.LiveListenerBus
 import org.apache.spark.security.CryptoStreamUtils
 import org.apache.spark.serializer.{JavaSerializer, Serializer, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
+import org.apache.spark.siteDriver.OutputCommitCoordinator
+import org.apache.spark.siteDriver.OutputCommitCoordinator.OutputCommitCoordinatorEndpoint
 import org.apache.spark.storage._
 import org.apache.spark.util.{RpcUtils, Utils}
 
@@ -242,7 +243,7 @@ object SparkEnv extends Logging {
       shuffleManager, blockTransferService, securityManager, numCores)
 
     // ==
-    val metricsSystem = MetricsSystem.createMetricsSystem("driver", conf, securityManager)
+    val metricsSystem = MetricsSystem.createMetricsSystem("global-driver", conf, securityManager)
 
     val envInstance = new SparkEnv(
       execId,
@@ -442,13 +443,12 @@ object SparkEnv extends Logging {
     val blockManagerPort = conf.get(BLOCK_MANAGER_PORT)
     val blockTransferService = new NettyBlockTransferService(
       conf, securityManager, hostname, hostname, blockManagerPort, numCores)
-    val blockManagerMasterRef = null
-//    val blockManagerMasterRef = RpcUtils.makeRef(
-//      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
-//      conf.get("spark.siteDriver.host", "localhost"),
-//      conf.getInt("spark.siteDriver.port", 7077),
-//      rpcEnv
-//    )
+    val blockManagerMasterRef = RpcUtils.makeRef(
+      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
+      conf.get("spark.siteDriver.host", "localhost"),
+      conf.getInt("spark.siteDriver.port", 7077),
+      rpcEnv
+    )
     // TODO-lzp: about the isDriver
     val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,

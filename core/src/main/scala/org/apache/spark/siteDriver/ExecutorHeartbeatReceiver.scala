@@ -70,7 +70,7 @@ private[spark] class ExecutorHeartbeatReceiver(
 
   val conf: SparkConf = ssc.getConf
 
-  private[spark] var scheduler: SiteTaskScheduler = _
+  private[spark] var scheduler: TaskScheduler = _
 
   // executor ID -> timestamp of when the last heartbeat from this executor was received
   private val executorLastSeen = new mutable.HashMap[String, Long]
