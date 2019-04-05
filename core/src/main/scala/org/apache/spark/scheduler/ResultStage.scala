@@ -31,6 +31,7 @@ private[spark] class ResultStage(
     id: Int,
     rdd: RDD[_],
     val func: (TaskContext, Iterator[_]) => _,
+  val partResult: (Array[Int], Array[_]) => _,
     val partitions: Array[Int],
     parents: List[Stage],
     firstJobId: Int,
@@ -41,7 +42,16 @@ private[spark] class ResultStage(
    * The active job for this result stage. Will be empty if the job has already finished
    * (e.g., because the job was cancelled).
    */
-  private[this] var _activeJob: Option[ActiveJob] = None
+  @transient private[this] var _activeJob: Option[ActiveJob] = None
+
+  var numFinished = 0
+
+//  Array.fill[_](numPartitions)(null)
+//  val finished: Array[Boolean] = Array.fill[Boolean](numPartitions)(false)
+
+  // TODO-lzp: 这里没办法实例化类型......因为不知道分区func的结果类型, 主要还是不明白为什么要换成_
+  // 能否用成Option
+  val finishedResults: Array[Any] = Array.ofDim[Any](numPartitions)
 
   def activeJob: Option[ActiveJob] = _activeJob
 
@@ -53,14 +63,19 @@ private[spark] class ResultStage(
     _activeJob = None
   }
 
+  def isSiteAvailble(): Boolean = numFinished == calcPartitions.length
+
   /**
    * Returns the sequence of partition ids that are missing (i.e. needs to be computed).
    *
    * This can only be called when there is an active job.
    */
   override def findMissingPartitions(): Seq[Int] = {
-    val job = activeJob.get
-    (0 until job.numPartitions).filter(id => !job.finished(id))
+    // TODO-lzp: 这里判断了null....
+    val missing = calcPartitions.indices.filter(id => finishedResults(calcPartitions(id)) == null)
+    assert(missing.size == calcPartitions.length - numFinished,
+      s"${missing.size} missing, expected ${calcPartitions.length - numFinished}")
+    missing
   }
 
   override def toString: String = "ResultStage " + id

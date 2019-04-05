@@ -298,7 +298,8 @@ class StageScheduler(
         case stage: ShuffleMapStage =>
           partitionsToCompute.map { id =>
             val locs = taskIdToLocations(id)
-            val part = partitions(id)
+            val p: Int = stage.calcPartitions(id)
+            val part = partitions(p)
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptId,
               taskBinary, part, locs, stage.latestInfo.taskMetrics, properties, Option(jobId),
               Option(ssc.siteAppId), ssc.siteAppAttemptId)
@@ -306,7 +307,7 @@ class StageScheduler(
 
         case stage: ResultStage =>
           partitionsToCompute.map { id =>
-            val p: Int = stage.partitions(id)
+            val p: Int = stage.calcPartitions(id)
             val part = partitions(p)
             val locs = taskIdToLocations(id)
             new ResultTask(stage.id, stage.latestInfo.attemptId,
@@ -463,37 +464,22 @@ class StageScheduler(
       case Success =>
         stage.pendingPartitions -= task.partitionId
         task match {
-            // TODO-lzp: 这里不能用Job来作任务完成的判断
           case rt: ResultTask[_, _] =>
             // Cast to ResultStage here because it's part of the ResultTask
             // TODO Refactor this out to a function that accepts a ResultStage
             val resultStage = stage.asInstanceOf[ResultStage]
-            resultStage.activeJob match {
-              case Some(job) =>
-                if (!job.finished(rt.outputId)) {
-                  updateAccumulators(event)
-                  job.finished(rt.outputId) = true
-                  job.numFinished += 1
-                  // If the whole job has finished, remove it
-                  if (job.numFinished == job.numPartitions) {
-                    markStageAsFinished(resultStage)
-                    cleanupStateForJobAndIndependentStages(job)
-                    listenerBus.post(
-                      SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobSucceeded))
-                  }
-
-                  // taskSucceeded runs some user code that might throw an exception. Make sure
-                  // we are resilient against that.
-                  try {
-                    job.listener.taskSucceeded(rt.outputId, event.result)
-                  } catch {
-                    case e: Exception =>
-                      // TODO: Perhaps we want to mark the resultStage as failed?
-                      job.listener.jobFailed(new SparkDriverExecutionException(e))
-                  }
-                }
-              case None =>
-                logInfo("Ignoring result from " + rt + " because its job has finished")
+            val partId = resultStage.calcPartitions(rt.outputId)
+            if (resultStage.finishedResults(partId) == null) {
+              updateAccumulators(event)
+              // TODO-lzp: 赋予结果
+//              resultStage.finished(partId) = true
+              resultStage.numFinished += 1
+              if (resultStage.isSiteAvailble()) {
+                // TODO-lzp: 表示此集群上的ResultStage完成
+              }
+              // TODO-lzp: 应该将job.listener.taskSuccessed的结果传回, 而非将event.result的结果
+              // 想法是将resultHandler处理的结果存储到ResultStage, 再将结果返回
+              // 但是ResultHandler没有返回值
             }
 
           case smt: ShuffleMapTask =>
@@ -528,7 +514,7 @@ class StageScheduler(
 
               clearCacheLocs()
 
-              if (!shuffleStage.isAvailable) {
+              if (!shuffleStage.isSiteAvailable) {
                 // Some tasks had failed; let's resubmit this shuffleStage
                 // TODO: Lower-level scheduler should also deal with this
                 logInfo("Resubmitting " + shuffleStage + " (" + shuffleStage.name +

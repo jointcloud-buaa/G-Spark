@@ -43,7 +43,7 @@ private[spark] class ShuffleMapStage(
     val shuffleDep: ShuffleDependency[_, _, _])
   extends Stage(id, rdd, numTasks, parents, firstJobId, callSite) {
 
-  private[this] var _mapStageJobs: List[ActiveJob] = Nil
+  @transient private[this] var _mapStageJobs: List[ActiveJob] = Nil
 
   private[this] var _numAvailableOutputs: Int = 0
 
@@ -52,6 +52,7 @@ private[spark] class ShuffleMapStage(
    * and each value in the array is the list of possible [[MapStatus]] for a partition
    * (a single task might run multiple times).
    */
+    // TODO-lzp: 感觉可以改为calcPartitions.size大小的数组
   private[this] val outputLocs = Array.fill[List[MapStatus]](numPartitions)(Nil)
 
   override def toString: String = "ShuffleMapStage " + id
@@ -85,11 +86,14 @@ private[spark] class ShuffleMapStage(
    */
   def isAvailable: Boolean = _numAvailableOutputs == numPartitions
 
+  // 在当前集群中是否完成
+  def isSiteAvailable: Boolean = _numAvailableOutputs == calcPartitions.length
+
   /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
   override def findMissingPartitions(): Seq[Int] = {
-    val missing = (0 until numPartitions).filter(id => outputLocs(id).isEmpty)
-    assert(missing.size == numPartitions - _numAvailableOutputs,
-      s"${missing.size} missing, expected ${numPartitions - _numAvailableOutputs}")
+    val missing = calcPartitions.indices.filter(id => outputLocs(calcPartitions(id)).isEmpty)
+    assert(missing.size == calcPartitions.length - _numAvailableOutputs,
+      s"${missing.size} missing, expected ${calcPartitions.length - _numAvailableOutputs}")
     missing
   }
 

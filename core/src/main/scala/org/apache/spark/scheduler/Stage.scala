@@ -71,6 +71,12 @@ private[spark] abstract class Stage(
 
   val pendingPartitions = new HashSet[Int]
 
+  private var _calcPartitions: Array[Int] = _
+
+  def calcPartitions_=(_partitions: Array[Int]): Unit = _calcPartitions = _partitions
+
+  def calcPartitions: Array[Int] = _calcPartitions
+
   /** The ID to use for the next new attempt for this stage. */
   private var nextAttemptId: Int = 0
 
@@ -113,6 +119,7 @@ private[spark] abstract class Stage(
       numPartitionsToCompute: Int,
       taskLocalityPreferences: Seq[Seq[TaskLocation]] = Seq.empty): Unit = {
     val metrics = new TaskMetrics
+    // TODO-lzp: 这里会有问题的, 不能使用SparkContext
     metrics.register(rdd.sparkContext)
     _latestInfo = StageInfo.fromStage(
       this, nextAttemptId, Some(numPartitionsToCompute), metrics, taskLocalityPreferences)

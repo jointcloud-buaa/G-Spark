@@ -35,6 +35,12 @@ case class ExecutorCacheTaskLocation(override val host: String, executorId: Stri
   override def toString: String = s"${TaskLocation.executorLocationTag}${host}_$executorId"
 }
 
+private [spark]
+case class SiteDriverCacheTaskLocation(override val host: String, sdriverId: String)
+  extends TaskLocation {
+  override def toString: String = s"${TaskLocation.siteDriverLocationTag}${host}_$sdriverId"
+}
+
 /**
  * A location on a host.
  */
@@ -58,8 +64,10 @@ private[spark] object TaskLocation {
   // Identify locations of executors with this prefix.
   val executorLocationTag = "executor_"
 
+  val siteDriverLocationTag = "siteDriver_"
+
   def apply(host: String, executorId: String): TaskLocation = {
-    new ExecutorCacheTaskLocation(host, executorId)
+    ExecutorCacheTaskLocation(host, executorId)
   }
 
   /**
@@ -75,12 +83,18 @@ private[spark] object TaskLocation {
         val splits = hostAndExecutorId.split("_", 2)
         require(splits.length == 2, "Illegal executor location format: " + str)
         val Array(host, executorId) = splits
-        new ExecutorCacheTaskLocation(host, executorId)
-      } else {
-        new HostTaskLocation(str)
+        ExecutorCacheTaskLocation(host, executorId)
+      } else if (str.startsWith(siteDriverLocationTag)) {
+          val hostAndSiteDriverId = str.stripPrefix(siteDriverLocationTag)
+          val splits = hostAndSiteDriverId.split("_", 2)
+          require(splits.length == 2, "Illegal executor location format: " + str)
+          val Array(host, sdriverId) = splits
+          SiteDriverCacheTaskLocation(host, sdriverId)
+        } else {
+        HostTaskLocation(str)
       }
     } else {
-      new HDFSCacheTaskLocation(hstr)
+      HDFSCacheTaskLocation(hstr)
     }
   }
 }
