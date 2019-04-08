@@ -31,7 +31,6 @@ private[spark] class ResultStage(
     id: Int,
     rdd: RDD[_],
     val func: (TaskContext, Iterator[_]) => _,
-  val partResult: (Array[Int], Array[_]) => _,
     val partitions: Array[Int],
     parents: List[Stage],
     firstJobId: Int,

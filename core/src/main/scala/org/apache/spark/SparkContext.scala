@@ -1875,31 +1875,21 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
    * Run a function on a given set of partitions in an RDD and pass the results to the given
    * handler function. This is the main entry point for all actions in Spark.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
+  def runJob[T, U: ClassTag](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    //           partitionsId, partitionsResult
-    partResult: (Array[Int], Array[U]) => P,
       partitions: Seq[Int],
-      resultHandler: (Int, P) => Unit): Unit = {
+      resultHandler: (Int, U) => Unit): Unit = {
     if (stopped.get()) {
       throw new IllegalStateException("SparkContext has been shutdown")
     }
     val callSite = getCallSite
     val cleanedFunc = clean(func)
-    val cleanedPartResult = clean(partResult)
     logInfo("Starting job: " + callSite.shortForm)
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
-    dagScheduler.runJob(
-      rdd,
-      cleanedFunc,
-      cleanedPartResult,
-      partitions,
-      callSite,
-      resultHandler,
-      localProperties.get)
+    dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
   }
@@ -1907,76 +1897,62 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   /**
    * Run a function on a given set of partitions in an RDD and return the results as an array.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
+  def runJob[T, U: ClassTag](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P,
-      partitions: Seq[Int]): Array[P] = {
-    val results = new Array[P](clusterNum)
-    runJob[T, U, P](rdd, func, partResult, partitions, (index, res) => results(index) = res)
+      partitions: Seq[Int]): Array[U] = {
+    val results = new Array[U](partitions.size)
+    runJob[T, U](rdd, func, partitions, (index, res) => results(index) = res)
     results
   }
-
-  // TODO-lzp: 获取集群的个数
-  def clusterNum: Int = 3
 
   /**
    * Run a job on a given set of partitions of an RDD, but take a function of type
    * `Iterator[T] => U` instead of `(TaskContext, Iterator[T]) => U`.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
+  def runJob[T, U: ClassTag](
       rdd: RDD[T],
       func: Iterator[T] => U,
-    partResult: (Array[Int], Array[U]) => P,
-      partitions: Seq[Int]): Array[P] = {
+      partitions: Seq[Int]): Array[U] = {
     val cleanedFunc = clean(func)
-    runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partResult, partitions)
+    runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partitions)
   }
 
   /**
    * Run a job on all partitions in an RDD and return the results in an array.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
-    rdd: RDD[T],
-    func: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P): Array[P] = {
-    runJob(rdd, func, partResult, 0 until rdd.partitions.length)
+  def runJob[T, U: ClassTag](rdd: RDD[T], func: (TaskContext, Iterator[T]) => U): Array[U] = {
+    runJob(rdd, func, 0 until rdd.partitions.length)
   }
 
   /**
    * Run a job on all partitions in an RDD and return the results in an array.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
-    rdd: RDD[T],
-    func: Iterator[T] => U,
-    partResult: (Array[Int], Array[U]) => P
-  ): Array[P] = {
-    runJob(rdd, func, partResult, 0 until rdd.partitions.length)
+  def runJob[T, U: ClassTag](rdd: RDD[T], func: Iterator[T] => U): Array[U] = {
+    runJob(rdd, func, 0 until rdd.partitions.length)
   }
 
   /**
    * Run a job on all partitions in an RDD and pass the results to a handler function.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
+  def runJob[T, U: ClassTag](
     rdd: RDD[T],
     processPartition: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P,
-    resultHandler: (Int, P) => Unit)
+    resultHandler: (Int, U) => Unit)
   {
-    runJob[T, U, P](rdd, processPartition, partResult, rdd.partitions.indices, resultHandler)
+    runJob[T, U](rdd, processPartition, 0 until rdd.partitions.length, resultHandler)
   }
 
   /**
    * Run a job on all partitions in an RDD and pass the results to a handler function.
    */
-  def runJob[T, U: ClassTag, P: ClassTag](
+  def runJob[T, U: ClassTag](
       rdd: RDD[T],
       processPartition: Iterator[T] => U,
-    partResult: (Array[Int], Array[U]) => P,
-      resultHandler: (Int, P) => Unit)
+      resultHandler: (Int, U) => Unit)
   {
     val processFunc = (context: TaskContext, iter: Iterator[T]) => processPartition(iter)
-    runJob[T, U, P](rdd, processFunc, partResult, rdd.partitions.indices, resultHandler)
+    runJob[T, U](rdd, processFunc, 0 until rdd.partitions.length, resultHandler)
   }
 
   /**
@@ -2004,11 +1980,11 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   /**
    * Submit a job for execution and return a FutureJob holding the result.
    */
-  def submitJob[T, U, R, P](
+  def submitJob[T, U, R](
       rdd: RDD[T],
       processPartition: Iterator[T] => U,
       partitions: Seq[Int],
-      resultHandler: (Int, P) => Unit,
+      resultHandler: (Int, U) => Unit,
       resultFunc: => R): SimpleFutureAction[R] =
   {
     assertNotStopped()
@@ -2017,8 +1993,6 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     val waiter = dagScheduler.submitJob(
       rdd,
       (context: TaskContext, iter: Iterator[T]) => cleanF(iter),
-      // TODO-lzp: 用null屏蔽错误
-      null.asInstanceOf[(Array[Int], Array[U]) => P],
       partitions,
       callSite,
       resultHandler,

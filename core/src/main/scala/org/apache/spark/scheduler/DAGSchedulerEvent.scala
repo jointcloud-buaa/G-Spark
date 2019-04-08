@@ -38,7 +38,6 @@ private[scheduler] case class JobSubmitted(
     jobId: Int,
     finalRDD: RDD[_],
     func: (TaskContext, Iterator[_]) => _,
-  partResult: (Array[Int], Array[_]) => _,
     partitions: Array[Int],
     callSite: CallSite,
     listener: JobListener,

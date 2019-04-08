@@ -380,14 +380,12 @@ class DAGScheduler(
   private def createResultStage(
       rdd: RDD[_],
       func: (TaskContext, Iterator[_]) => _,
-    partResult: (Array[Int], Array[_]) => _,
       partitions: Array[Int],
       jobId: Int,
-      callSite: CallSite
-  ): ResultStage = {
+      callSite: CallSite): ResultStage = {
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
-    val stage = new ResultStage(id, rdd, func, partResult, partitions, parents, jobId, callSite)
+    val stage = new ResultStage(id, rdd, func, partitions, parents, jobId, callSite)
     stageIdToStage(id) = stage
     updateJobIdStageIdMaps(jobId, stage)
     stage
@@ -587,16 +585,13 @@ class DAGScheduler(
    *
    * @throws IllegalArgumentException when partitions ids are illegal
    */
-  def submitJob[T, U, P](
+  def submitJob[T, U](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    // TODO-lzp: 感觉还是改为Option好了
-    partResult: (Array[Int], Array[U]) => P,
       partitions: Seq[Int],
       callSite: CallSite,
-      resultHandler: (Int, P) => Unit,
-      properties: Properties
-  ): JobWaiter[P] = {
+      resultHandler: (Int, U) => Unit,
+      properties: Properties): JobWaiter[U] = {
     // Check to make sure we are not launching a task on a partition that does not exist.
     val maxPartitions = rdd.partitions.length
     partitions.find(p => p >= maxPartitions || p < 0).foreach { p =>
@@ -608,16 +603,14 @@ class DAGScheduler(
     val jobId = nextJobId.getAndIncrement()
     if (partitions.size == 0) {
       // Return immediately if the job is running 0 tasks
-      return new JobWaiter[P](this, jobId, 0, resultHandler)
+      return new JobWaiter[U](this, jobId, 0, resultHandler)
     }
 
     assert(partitions.size > 0)
     val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
-    // TODO-lzp: 不确定为什么要去掉类型信息
-    val partResult2 = partResult.asInstanceOf[(Array[Int], Array[_]) => _]
     val waiter = new JobWaiter(this, jobId, partitions.size, resultHandler)
     eventProcessLoop.post(JobSubmitted(
-      jobId, rdd, func2, partResult2, partitions.toArray, callSite, waiter,
+      jobId, rdd, func2, partitions.toArray, callSite, waiter,
       SerializationUtils.clone(properties)))
     waiter
   }
@@ -636,16 +629,15 @@ class DAGScheduler(
    *
    * @throws Exception when the job fails
    */
-  def runJob[T, U, P](
+  def runJob[T, U](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P,
       partitions: Seq[Int],
       callSite: CallSite,
-      resultHandler: (Int, P) => Unit,
+      resultHandler: (Int, U) => Unit,
       properties: Properties): Unit = {
     val start = System.nanoTime
-    val waiter = submitJob(rdd, func, partResult, partitions, callSite, resultHandler, properties)
+    val waiter = submitJob(rdd, func, partitions, callSite, resultHandler, properties)
     // Note: Do not call Await.ready(future) because that calls `scala.concurrent.blocking`,
     // which causes concurrent SQL executions to fail if a fork-join pool is used. Note that
     // due to idiosyncrasies in Scala, `awaitPermission` is not actually used anywhere so it's
@@ -689,9 +681,7 @@ class DAGScheduler(
     val partitions = (0 until rdd.partitions.length).toArray
     val jobId = nextJobId.getAndIncrement()
     eventProcessLoop.post(JobSubmitted(
-      // TODO-lzp: 这里临时用null替代partResult, 用来屏蔽错误
-      jobId, rdd, func2, null, partitions, callSite, listener,
-      SerializationUtils.clone(properties)))
+      jobId, rdd, func2, partitions, callSite, listener, SerializationUtils.clone(properties)))
     listener.awaitResult()    // Will throw an exception if the job fails
   }
 
@@ -856,7 +846,6 @@ class DAGScheduler(
   private[scheduler] def handleJobSubmitted(jobId: Int,
       finalRDD: RDD[_],
       func: (TaskContext, Iterator[_]) => _,
-    partResult: (Array[Int], Array[_]) => _,
       partitions: Array[Int],
       callSite: CallSite,
       listener: JobListener,
@@ -865,7 +854,7 @@ class DAGScheduler(
     try {
       // New stage creation may throw an exception if, for example, jobs are run on a
       // HadoopRDD whose underlying HDFS files have been deleted.
-      finalStage = createResultStage(finalRDD, func, partResult, partitions, jobId, callSite)
+      finalStage = createResultStage(finalRDD, func, partitions, jobId, callSite)
     } catch {
       case e: Exception =>
         logWarning("Creating new stage failed due to exception - job: " + jobId, e)
@@ -1266,9 +1255,8 @@ private[scheduler] class DAGSchedulerEventProcessLoop(dagScheduler: DAGScheduler
   }
 
   private def doOnReceive(event: DAGSchedulerEvent): Unit = event match {
-    case JobSubmitted(jobId, rdd, func, partResult, partitions, callSite, listener, properties) =>
-      dagScheduler.handleJobSubmitted(
-        jobId, rdd, func, partResult, partitions, callSite, listener, properties)
+    case JobSubmitted(jobId, rdd, func, partitions, callSite, listener, properties) =>
+      dagScheduler.handleJobSubmitted(jobId, rdd, func, partitions, callSite, listener, properties)
 
     case MapStageSubmitted(jobId, dependency, callSite, listener, properties) =>
       dagScheduler.handleMapStageSubmitted(jobId, dependency, callSite, listener, properties)

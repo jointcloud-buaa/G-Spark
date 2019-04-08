@@ -917,8 +917,7 @@ abstract class RDD[T: ClassTag](
    */
   def foreach(f: T => Unit): Unit = withScope {
     val cleanF = sc.clean(f)
-    val partResult = (partIds: Array[Int], partRes: Array[Unit]) => Unit
-    sc.runJob(this, (iter: Iterator[T]) => iter.foreach(cleanF), partResult)
+    sc.runJob(this, (iter: Iterator[T]) => iter.foreach(cleanF))
   }
 
   /**
@@ -926,8 +925,7 @@ abstract class RDD[T: ClassTag](
    */
   def foreachPartition(f: Iterator[T] => Unit): Unit = withScope {
     val cleanF = sc.clean(f)
-    val partResult = (partIds: Array[Int], partRes: Array[Unit]) => Unit
-    sc.runJob(this, (iter: Iterator[T]) => cleanF(iter), partResult)
+    sc.runJob(this, (iter: Iterator[T]) => cleanF(iter))
   }
 
   /**
@@ -937,9 +935,8 @@ abstract class RDD[T: ClassTag](
    * all the data is loaded into the driver's memory.
    */
   def collect(): Array[T] = withScope {
-    val partResult = (partIds: Array[Int], partRes: Array[Array[T]]) => partIds.zip(partRes)
-    val results = sc.runJob(this, (iter: Iterator[T]) => iter.toArray, partResult)
-    results.flatten.sortBy(_._1).flatMap(_._2)
+    val results = sc.runJob(this, (iter: Iterator[T]) => iter.toArray)
+    Array.concat(results: _*)
   }
 
   /**
@@ -953,9 +950,7 @@ abstract class RDD[T: ClassTag](
    */
   def toLocalIterator: Iterator[T] = withScope {
     def collectPartition(p: Int): Array[T] = {
-      val partResult = (partIds: Array[Int], partRes: Array[Array[T]]) => partIds.zip(partRes)
-      val results = sc.runJob(this, (iter: Iterator[T]) => iter.toArray, partResult, Seq(p))
-      results.flatten.head._2
+      sc.runJob(this, (iter: Iterator[T]) => iter.toArray, Seq(p)).head
     }
     (0 until partitions.length).iterator.flatMap(i => collectPartition(i))
   }
@@ -1030,9 +1025,7 @@ abstract class RDD[T: ClassTag](
         }
       }
     }
-    val partResult = (partIds: Array[Int], partRes: Array[Option[T]]) =>
-      partRes.reduce((a, b) => a.flatMap(aa => b.map(bb => f(aa, bb))))
-    sc.runJob(this, reducePartition, partResult, mergeResult)
+    sc.runJob(this, reducePartition, mergeResult)
     // Get the final result out of our Option, or throw an exception if the RDD was empty
     jobResult.getOrElse(throw new UnsupportedOperationException("empty collection"))
   }
@@ -1095,8 +1088,7 @@ abstract class RDD[T: ClassTag](
     val cleanOp = sc.clean(op)
     val foldPartition = (iter: Iterator[T]) => iter.fold(zeroValue)(cleanOp)
     val mergeResult = (index: Int, taskResult: T) => jobResult = op(jobResult, taskResult)
-    val partResult = (partIds: Array[Int], partRes: Array[T]) => partRes.reduce(op)
-    sc.runJob(this, foldPartition, partResult, mergeResult)
+    sc.runJob(this, foldPartition, mergeResult)
     jobResult
   }
 
@@ -1122,8 +1114,7 @@ abstract class RDD[T: ClassTag](
     val cleanCombOp = sc.clean(combOp)
     val aggregatePartition = (it: Iterator[T]) => it.aggregate(zeroValue)(cleanSeqOp, cleanCombOp)
     val mergeResult = (index: Int, taskResult: U) => jobResult = combOp(jobResult, taskResult)
-    val partResult = (partIds: Array[Int], partRes: Array[U]) => partRes.reduce(combOp)
-    sc.runJob(this, aggregatePartition, partResult, mergeResult)
+    sc.runJob(this, aggregatePartition, mergeResult)
     jobResult
   }
 
@@ -1166,10 +1157,7 @@ abstract class RDD[T: ClassTag](
   /**
    * Return the number of elements in the RDD.
    */
-  def count(): Long = {
-    val partResult = (partIds: Array[Int], partRes: Array[Long]) => partRes.sum
-    sc.runJob(this, Utils.getIteratorSize _, partResult).sum
-  }
+  def count(): Long = sc.runJob(this, Utils.getIteratorSize _).sum
 
   /**
    * Approximate version of count() that returns a potentially incomplete result
@@ -1365,9 +1353,8 @@ abstract class RDD[T: ClassTag](
 
         val left = num - buf.size
         val p = partsScanned.until(math.min(partsScanned + numPartsToTry, totalParts).toInt)
-        val partResult = (partIds: Array[Int], partRes: Array[Array[T]]) => partIds.zip(partRes)
-        val results = sc.runJob(this, (it: Iterator[T]) => it.take(left).toArray, partResult, p)
-        val res = results.flatten.sortBy(_._1).map(_._2)
+        val res = sc.runJob(this, (it: Iterator[T]) => it.take(left).toArray, p)
+
         res.foreach(buf ++= _.take(num - buf.size))
         partsScanned += p.size
       }
@@ -1541,9 +1528,7 @@ abstract class RDD[T: ClassTag](
 
   /** A private method for tests, to look at the contents of each partition */
   private[spark] def collectPartitions(): Array[Array[T]] = withScope {
-    val partResult = (partIds: Array[Int], partRes: Array[Array[T]]) => partIds.zip(partRes)
-    val allResult = sc.runJob(this, (iter: Iterator[T]) => iter.toArray, partResult)
-    allResult.flatten.sortBy(_._1).map(_._2)
+    sc.runJob(this, (iter: Iterator[T]) => iter.toArray)
   }
 
   /**
