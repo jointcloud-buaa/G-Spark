@@ -1878,10 +1878,10 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    //           partitionsId, partitionsResult
-    partResult: (Array[Int], Array[U]) => P,
       partitions: Seq[Int],
-      resultHandler: (Int, P) => Unit): Unit = {
+      resultHandler: (Int, P) => Unit,
+      //           partitionsId, partitionsResult
+      partResult: Option[(Array[Int], Array[U]) => P] = None): Unit = {
     if (stopped.get()) {
       throw new IllegalStateException("SparkContext has been shutdown")
     }
@@ -1895,11 +1895,12 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     dagScheduler.runJob(
       rdd,
       cleanedFunc,
-      cleanedPartResult,
       partitions,
       callSite,
       resultHandler,
-      localProperties.get)
+      localProperties.get,
+      cleanedPartResult
+    )
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
   }
@@ -1910,10 +1911,10 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P,
-      partitions: Seq[Int]): Array[P] = {
+      partitions: Seq[Int],
+      partResult: Option[(Array[Int], Array[U]) => P] = None): Array[P] = {
     val results = new Array[P](clusterNum)
-    runJob[T, U, P](rdd, func, partResult, partitions, (index, res) => results(index) = res)
+    runJob[T, U, P](rdd, func, partitions, (index, res) => results(index) = res, partResult)
     results
   }
 
@@ -1927,10 +1928,10 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
       rdd: RDD[T],
       func: Iterator[T] => U,
-    partResult: (Array[Int], Array[U]) => P,
-      partitions: Seq[Int]): Array[P] = {
+      partitions: Seq[Int],
+      partResult: Option[(Array[Int], Array[U]) => P] = None): Array[P] = {
     val cleanedFunc = clean(func)
-    runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partResult, partitions)
+    runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partitions, partResult)
   }
 
   /**
@@ -1939,8 +1940,8 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
     rdd: RDD[T],
     func: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P): Array[P] = {
-    runJob(rdd, func, partResult, 0 until rdd.partitions.length)
+    partResult: Option[(Array[Int], Array[U]) => P] = None): Array[P] = {
+    runJob(rdd, func, 0 until rdd.partitions.length, partResult)
   }
 
   /**
@@ -1949,9 +1950,8 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
     rdd: RDD[T],
     func: Iterator[T] => U,
-    partResult: (Array[Int], Array[U]) => P
-  ): Array[P] = {
-    runJob(rdd, func, partResult, 0 until rdd.partitions.length)
+    partResult: Option[(Array[Int], Array[U]) => P] = None): Array[P] = {
+    runJob(rdd, func, 0 until rdd.partitions.length, partResult)
   }
 
   /**
@@ -1960,10 +1960,9 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
     rdd: RDD[T],
     processPartition: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P,
-    resultHandler: (Int, P) => Unit)
-  {
-    runJob[T, U, P](rdd, processPartition, partResult, rdd.partitions.indices, resultHandler)
+    resultHandler: (Int, P) => Unit,
+  partResult: Option[(Array[Int], Array[U]) => P] = None): Unit = {
+    runJob[T, U, P](rdd, processPartition, rdd.partitions.indices, resultHandler, partResult)
   }
 
   /**
@@ -1972,11 +1971,10 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def runJob[T, U: ClassTag, P: ClassTag](
       rdd: RDD[T],
       processPartition: Iterator[T] => U,
-    partResult: (Array[Int], Array[U]) => P,
-      resultHandler: (Int, P) => Unit)
-  {
+      resultHandler: (Int, P) => Unit,
+      partResult: Option[(Array[Int], Array[U]) => P] = None): Unit = {
     val processFunc = (context: TaskContext, iter: Iterator[T]) => processPartition(iter)
-    runJob[T, U, P](rdd, processFunc, partResult, rdd.partitions.indices, resultHandler)
+    runJob[T, U, P](rdd, processFunc, rdd.partitions.indices, resultHandler, partResult)
   }
 
   /**

@@ -590,12 +590,11 @@ class DAGScheduler(
   def submitJob[T, U, P](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    // TODO-lzp: 感觉还是改为Option好了
-    partResult: (Array[Int], Array[U]) => P,
       partitions: Seq[Int],
       callSite: CallSite,
       resultHandler: (Int, P) => Unit,
-      properties: Properties
+      properties: Properties,
+      partResult: Option[(Array[Int], Array[U]) => P] = None
   ): JobWaiter[P] = {
     // Check to make sure we are not launching a task on a partition that does not exist.
     val maxPartitions = rdd.partitions.length
@@ -639,13 +638,13 @@ class DAGScheduler(
   def runJob[T, U, P](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-    partResult: (Array[Int], Array[U]) => P,
       partitions: Seq[Int],
       callSite: CallSite,
       resultHandler: (Int, P) => Unit,
-      properties: Properties): Unit = {
+      properties: Properties,
+      partResult: Option[(Array[Int], Array[U]) => P] = None): Unit = {
     val start = System.nanoTime
-    val waiter = submitJob(rdd, func, partResult, partitions, callSite, resultHandler, properties)
+    val waiter = submitJob(rdd, func, partitions, callSite, resultHandler, properties, partResult)
     // Note: Do not call Await.ready(future) because that calls `scala.concurrent.blocking`,
     // which causes concurrent SQL executions to fail if a fork-join pool is used. Note that
     // due to idiosyncrasies in Scala, `awaitPermission` is not actually used anywhere so it's
