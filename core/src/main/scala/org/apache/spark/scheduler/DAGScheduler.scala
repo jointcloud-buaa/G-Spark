@@ -1275,6 +1275,7 @@ class DAGScheduler(
       return cached
     }
     // If the RDD has some placement preferences (as is the case for input RDDs), get those
+    // TODO-lzp: 1个是HDFSRDD的位置
     val rddPrefs = rdd.preferredLocations(rdd.partitions(partition)).toList
     if (rddPrefs.nonEmpty) {
       return rddPrefs.map(TaskLocation(_))
