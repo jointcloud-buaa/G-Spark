@@ -17,17 +17,16 @@
 
 package org.apache.spark.scheduler
 
-import java.io.NotSerializableException
 import java.util.Properties
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.annotation.tailrec
 import scala.collection.Map
-import scala.collection.mutable.{HashMap, HashSet, Stack}
+import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Stack}
 import scala.concurrent.duration._
 import scala.language.existentials
 import scala.language.postfixOps
+import scala.util.Random
 import scala.util.control.NonFatal
 
 import org.apache.commons.lang3.SerializationUtils
@@ -946,34 +945,58 @@ class DAGScheduler(
   }
 
   /** Called when stage's parents are available and we can now do its task. */
-  // TODO-lzp: 简单说, 就是向1层发送Stage的序列化
   private def submitMissingStage(stage: Stage, jobId: Int): Unit = {
     logDebug(s"submitMissingStage($stage)")
     stage.pendingPartitions.clear()
     val properties = jobIdToActiveJob(jobId).properties
     runningStages += stage
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
-    var taskBinaryBytes: Array[Byte] = null
-    try {
-      // TODO-lzp: 不明白RDDCheckpointData的同步是做什么的
-      RDDCheckpointData.synchronized {
-        taskBinaryBytes = JavaUtils.bufferToArray(
-          closureSerializer.serialize((stage, properties))
-        )
+
+    val partitionsToCompute: Seq[Int] = stage.findGlobalMissingPartitions()
+    val mapIdToLocations: Map[Int, Seq[TaskLocation]] = try {
+      stage match {
+        case s: ShuffleMapStage =>
+          partitionsToCompute.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
+        case s: ResultStage =>
+          partitionsToCompute.map { id =>
+            val p = s.partitions(id)
+            (id, getPreferredLocs(stage.rdd, p))
+          }.toMap
       }
     } catch {
-      // In the case of a failure during serialization, abort the stage.
-      case e: NotSerializableException =>
-        abortStage(stage, "Task not serializable: " + e.toString, Some(e))
-        runningStages -= stage
-
-        // Abort execution
-        return
       case NonFatal(e) =>
-        abortStage(stage, s"Task serialization failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        stage.makeNewStageAttempt(partitionsToCompute.size)
+        listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+        abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
         return
     }
+    // TODO-lzp: 根据mapId的分布获取数据分布
+
+    val stageDesc = buildStageDescription(stage, jobId, properties)
+    backend.launchStages(stageDesc)
+  }
+
+  // TODO-lzp: BlockToLocation(数据分布), BandwitchDistribute(带宽分布)
+  // 前者: 1, MapOutputGlobalMaster, 2, catchLocs
+  // 后者: 从GlobalMaster中获取信息
+  def buildStageDescription(
+    stage: Stage, jobId: Int, properties: Properties): Seq[StageDescription] = {
+    val allPartitions = stage match {
+      case s: ShuffleMapStage =>
+        (0 until s.numPartitions).toSeq
+      case r: ResultStage =>
+        r.partitions.toSeq
+    }
+    val shufflePartitons = Random.shuffle(allPartitions).toArray
+    val sdriverIds = backend.getSiteDriverIds
+    val parts = shufflePartitons.grouped(shufflePartitons.length / sdriverIds.length + 1).toArray
+    val desc = parts.zipWithIndex.map { case (part, idx) =>
+      val serializedStage = Stage.serializeWithDependencies(
+        stage, jobId, part, properties, sc.addedFiles, sc.addedJars, closureSerializer)
+      new StageDescription(stage.id, sdriverIds(idx), idx, serializedStage)
+    }
+    desc
   }
 
   // TODO-lzp: 处理site driver lost
@@ -981,6 +1004,57 @@ class DAGScheduler(
 
   }
 
+  // TODO-lzp: 处理单个集群上的stage结束
+  private[scheduler] def subStageFinished(
+    stageId: Int, parts: Array[Int], results: Array[_]): Unit = {
+    if (!stageIdToStage.contains(stageId)) {
+      logInfo(s"the stage(id: $stageId) is not belong to the application")
+    } else {
+      val stage = stageIdToStage(stageId)
+      if (!runningStages.contains(stage)) {
+        logInfo(s"the stage(id: $stageId) is not running. the results will be drop")
+      } else {
+        // TODO-lzp: 处理部分结果
+        stage match {
+          case rs: ResultStage =>
+            rs.activeJob match {
+              case Some(job) =>
+                parts.indices.foreach { idx =>
+                  job.finished(idx) = true
+                  job.numFinished += 1
+                  if (job.numFinished == job.numPartitions) {
+                    markStageAsFinished(rs)
+                    cleanupStateForJobAndIndependentStages(job)
+                    listenerBus.post(
+                      SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobSucceeded)
+                    )
+                  }
+                  try {
+                    job.listener.taskSucceeded(idx, results(idx))
+                  } catch {
+                    case e: Exception =>
+                      // TODO: Perhaps we want to mark the resultStage as failed?
+                      job.listener.jobFailed(new SparkDriverExecutionException(e))
+                  }
+                }
+              case None =>
+                logInfo(s"Ignoring result from subStage(id: $stageId) " +
+                  "because its job has finished")
+            }
+          case sms: ShuffleMapStage =>
+            parts.indices.foreach { idx =>
+              sms.addOutputLoc(parts(idx), results(idx).asInstanceOf[MapStatus])
+            }
+            // TODO-lzp: 这里未考虑ShuffleMapStageJob的事, 它的特殊在于ShuffleMapStage也可以指定计算
+            // 的分区, 因此pendingPartitions结束不代表Stage可用, 改起来也还行, 就是得搞明白序列化的一些
+            // 事, 即pendingPartitions在GD/SD的存在
+            if (runningStages.contains(sms) && sms.isAvailable) {
+
+            }
+        }
+      }
+    }
+  }
 
   // TODO-lzp: handle site driver added, because no failedEpoch for site driver
   private[scheduler] def handleSiteDriverAdded(sdriverId: String, host: String): Unit = {
@@ -1172,8 +1246,6 @@ class DAGScheduler(
    * This method is thread-safe because it only accesses DAGScheduler state through thread-safe
    * methods (getCacheLocs()); please be careful when modifying this method, because any new
    * DAGScheduler state accessed by it may require additional synchronization.
-   * 这个方法是线程安全的, 因为它只以线程安全的方法(getCacheLocs)访问dagScheduler的状态. 请小心地
-   * 修改此方法, 因为它访问的任何新的dagScheduler可能要求额外的同步.
    */
   private def getPreferredLocsInternal(
     rdd: RDD[_],

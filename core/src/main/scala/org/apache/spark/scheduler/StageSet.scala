@@ -16,19 +16,10 @@
  */
 package org.apache.spark.scheduler
 
-import java.nio.ByteBuffer
-
-import org.apache.spark.util.SerializableBuffer
-
-private[spark] class StageDescription(
+private[spark] class StageSet(
+  val stages: Array[Stage],
   val stageId: Int,
-  val sdriverId: String,
-  val index: Int,
-  _serializedStage: ByteBuffer
-) extends Serializable {
-
-  private val buffer = new SerializableBuffer(_serializedStage)
-  def serializedStage: ByteBuffer = buffer.value
-
-  override def toString: String = s"StageDescription(SID=$stageId, index=$index"
+  val priority: Int
+) {
+  override def toString: String = s"StageSet $stageId"
 }

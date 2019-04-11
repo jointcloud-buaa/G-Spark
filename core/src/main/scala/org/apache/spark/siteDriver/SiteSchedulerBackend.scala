@@ -16,6 +16,8 @@
  */
 package org.apache.spark.siteDriver
 
+import java.nio.ByteBuffer
+
 private[spark] trait SiteSchedulerBackend {
   private val appId = "site-application-" + System.currentTimeMillis
 
@@ -35,5 +37,7 @@ private[spark] trait SiteSchedulerBackend {
   def getSiteDriverLogUrls: Option[Map[String, String]] = None
 
   def reportClusterReady(): Unit
+
+  def reportStageFinished(data: ByteBuffer): Unit
 
 }

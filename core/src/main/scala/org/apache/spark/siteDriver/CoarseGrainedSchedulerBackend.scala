@@ -17,6 +17,7 @@
 
 package org.apache.spark.siteDriver
 
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.annotation.concurrent.GuardedBy
@@ -76,8 +77,7 @@ class CoarseGrainedSchedulerBackend(
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
   private var numPendingExecutors = 0
 
-  // TODO-lzp: site driver's listener bus is what
-  //  private val listenerBus = scheduler.sc.listenerBus
+  private val listenerBus = scheduler.ssc.listenerBus
 
   // Executors we have requested the cluster manager to kill that have not died yet; maps
   // the executor ID to whether it was explicitly killed by the driver (and thus shouldn't
@@ -171,6 +171,11 @@ class CoarseGrainedSchedulerBackend(
           }
         }
 
+      case LaunchStage(data) =>
+        val stageDesc = ser.deserialize[StageDescription](data.value)
+        logInfo(s"Got assigned stage ${stageDesc.stageId}")
+        scheduler.stageScheduler.stageSubmitted(stageDesc)
+
       case ReviveOffers =>
         makeOffers()
 
@@ -224,9 +229,8 @@ class CoarseGrainedSchedulerBackend(
           executorRef.send(RegisteredExecutor)
           // Note: some tests expect the reply to come after we put the executor in the map
           context.reply(true)
-          // TODO-lzp: 如何将事件post到globalDriver的listenerBus, 将其作为消息???
-          //          listenerBus.post(
-          //            SparkListenerExecutorAdded(System.currentTimeMillis(), executorId, data))
+          listenerBus.post(
+            SparkListenerExecutorAdded(System.currentTimeMillis(), executorId, data))
 
           makeOffers()
         }
@@ -340,9 +344,8 @@ class CoarseGrainedSchedulerBackend(
           totalRegisteredExecutors.addAndGet(-1)
           // 告知TaskSchedulerImpl, Executor没了, 或者被driver明确杀死, 或者reason
           scheduler.executorLost(executorId, if (killed) ExecutorKilled else reason)
-// TODO-lzp: 如何post消息到listenerBus
-//          listenerBus.post(
-//            SparkListenerExecutorRemoved(System.currentTimeMillis(), executorId, reason.toString))
+          listenerBus.post(
+            SparkListenerExecutorRemoved(System.currentTimeMillis(), executorId, reason.toString))
         case None =>
           // SPARK-15262: If an executor is still alive even after the scheduler has removed
           // its metadata, we may receive a heartbeat from that executor and tell its block
@@ -402,6 +405,12 @@ class CoarseGrainedSchedulerBackend(
     // TODO (prashant) send conf instead of properties
     // TODO-lzp: 还不如直接发送conf, 这里感觉有问题
     sdriverEndpoint = createDriverEndpointRef(properties)
+  }
+
+  override def reportStageFinished(data: ByteBuffer): Unit = {
+    gdriverEndpoint.foreach(_.send(SubStageFinished(
+      siteDriverId,
+      new SerializableBuffer(data))))
   }
 
   protected def createDriverEndpointRef(
@@ -484,7 +493,6 @@ class CoarseGrainedSchedulerBackend(
   // 会被StandaloneSchedulerBackend覆盖掉
   def sufficientResourcesRegistered: Boolean = true
 
-  // 对SchedulerBackend#isReady的实现, 但似乎默认为true
   override def isReady(): Boolean = {
     if (sufficientResourcesRegistered) { // 如果有足够的资源被注册
       logInfo("SiteSchedulerBackend is ready for scheduling beginning after " +
@@ -730,5 +738,5 @@ class CoarseGrainedSchedulerBackend(
 }
 
 object CoarseGrainedSchedulerBackend {
-  val ENDPOINT_NAME = "CoarseGrainedSiteScheduler"
+  val ENDPOINT_NAME = "CoarseGrainedScheduler"
 }

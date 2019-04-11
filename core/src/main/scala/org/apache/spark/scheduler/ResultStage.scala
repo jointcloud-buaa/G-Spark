@@ -45,12 +45,12 @@ private[spark] class ResultStage(
 
   var numFinished = 0
 
-//  Array.fill[_](numPartitions)(null)
-//  val finished: Array[Boolean] = Array.fill[Boolean](numPartitions)(false)
+  private[this] var partResults: Array[List[Any]] = _
 
-  // TODO-lzp: 这里没办法实例化类型......因为不知道分区func的结果类型, 主要还是不明白为什么要换成_
-  // 能否用成Option
-  val finishedResults: Array[Any] = Array.ofDim[Any](numPartitions)
+  override def init(parts: Array[Int]): Unit = {
+    calcPartitions = parts
+    partResults = Array.fill(parts.length)(Nil)
+  }
 
   def activeJob: Option[ActiveJob] = _activeJob
 
@@ -64,17 +64,35 @@ private[spark] class ResultStage(
 
   def isSiteAvailble(): Boolean = numFinished == calcPartitions.length
 
+  // TODO-lzp: 关于如何移除一个ResultTask的结果, 对于ShuffleMapTask, 当FetchedFailed发生时会移除
+
+  def addPartResult(idx: Int, result: Any): Unit = {
+    val prevList = partResults(idx)
+    partResults(idx) = result :: prevList
+    if (prevList == Nil) {
+      numFinished += 1
+    }
+  }
+
+  def getPartResults: Array[Any] = {
+    partResults.map(_.headOption.orNull)
+  }
+
   /**
    * Returns the sequence of partition ids that are missing (i.e. needs to be computed).
    *
    * This can only be called when there is an active job.
    */
   override def findMissingPartitions(): Seq[Int] = {
-    // TODO-lzp: 这里判断了null....
-    val missing = calcPartitions.indices.filter(id => finishedResults(calcPartitions(id)) == null)
+    val missing = calcPartitions.indices.filter(id => partResults(id).isEmpty)
     assert(missing.size == calcPartitions.length - numFinished,
       s"${missing.size} missing, expected ${calcPartitions.length - numFinished}")
     missing
+  }
+
+  override def findGlobalMissingPartitions(): Seq[Int] = {
+    val job = activeJob.get
+    (0 until job.numPartitions).filter(id => !job.finished(id))
   }
 
   override def toString: String = "ResultStage " + id

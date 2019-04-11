@@ -21,14 +21,16 @@ import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
+import scala.language.existentials
 
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
+import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rpc._
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.scheduler.cluster.CoarseGrainedGlobalSchedulerBackend._
-import org.apache.spark.util.{RpcUtils, ThreadUtils}
+import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils}
 
 private[spark] class CoarseGrainedGlobalSchedulerBackend(
   scheduler: DAGScheduler, val rpcEnv: RpcEnv
@@ -50,7 +52,6 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
   // must be protected by `CoarseGrainedSchedulerBackend.this`. Besides, `executorDataMap` should
   // only be modified in `DriverEndpoint.receive/receiveAndReply` with protection by
   // `CoarseGrainedSchedulerBackend.this`.
-  //  private val executorDataMap = new HashMap[String, ExecutorData]
   private val siteDriverDataMap = new mutable.HashMap[String, SiteDriverData]
   // siteDriverId -> ready?
   // TODO-lzp: 不确定用id来标识siteDriver会不会有问题, id会不会变, 重启siteDriver会发生什么
@@ -101,6 +102,25 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
       // TODO-lzp: 感觉SiteDriver需要周期性或主动性向GlobalDriver汇报各自的task执行进度
 
       // TODO-lzp: 主动取消某个特定stage的所有task的执行, 如何做
+
+      case LaunchStages(stages: Seq[StageDescription]) =>
+        for (stage <- stages) {
+          val serializedStage = ser.serialize(stage)
+          val sdriverData = siteDriverDataMap(stage.sdriverId)
+          logInfo(s"Launching stage ${stage.stageId} on siteDriverId: ${stage.sdriverId} " +
+            s"hostname: ${sdriverData.sdriverHost}")
+          sdriverData.endpoint.send(LaunchStage(new SerializableBuffer(serializedStage)))
+        }
+
+      case SubStageFinished(sdriverId, data) =>
+        if (!siteDriverDataMap.contains(sdriverId)) {
+          logInfo("the sub stage's result is from unknown siteDriver")
+        } else {
+          val (results, parts, stageId) = Stage.deserializeStageResult(data.value, ser)
+          logInfo(s"received the sub stage's(id: $stageId result from siteDriver($sdriverId)")
+          scheduler.subStageFinished(stageId, parts, results)
+        }
+
       case _ =>
         throw new SparkException("not receive anything now")
     }
@@ -172,10 +192,6 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
         !siteDriversPendingLossReason.contains(executorId)
     }
 
-    // Launch tasks returned by a set of resource offers
-    // TODO-lzp: 向各个siteDriver发送其需要执行的任务子集
-    private def launchTasks(tasks: Seq[Seq[TaskDescription]]) {
-    }
 
     // Remove a disconnected site driver from the cluster
     private def removeSiteDriver(sdriverId: String, reason: SiteDriverLossReason): Unit = {
@@ -243,6 +259,11 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
     // TODO (prashant) send conf instead of properties
     driverEndpoint = createDriverEndpointRef(properties)
   }
+
+  override def launchStages(stages: Seq[StageDescription]): Unit = {
+    driverEndpoint.send(LaunchStages(stages))
+  }
+
 
   protected def createDriverEndpointRef(
     properties: ArrayBuffer[(String, String)]): RpcEndpointRef = {

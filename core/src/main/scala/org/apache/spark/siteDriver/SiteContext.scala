@@ -16,8 +16,10 @@
  */
 package org.apache.spark.siteDriver
 
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.{HashMap, HashSet}
 import scala.reflect.{classTag, ClassTag}
 import scala.util.control.NonFatal

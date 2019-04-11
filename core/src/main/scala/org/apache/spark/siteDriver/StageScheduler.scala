@@ -17,7 +17,7 @@
 
 package org.apache.spark.siteDriver
 
-import java.io.NotSerializableException
+import java.io.{File, NotSerializableException}
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -31,12 +31,13 @@ import scala.util.control.NonFatal
 
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
-import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, JobSucceeded, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SparkListenerExecutorMetricsUpdate, SparkListenerJobEnd, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, Task, TaskInfo, TaskLocation, TaskSet}
+import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, JobSucceeded, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SparkListenerExecutorMetricsUpdate, SparkListenerJobEnd, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
@@ -64,17 +65,24 @@ class StageScheduler(
 
   def this(ssc: SiteContext) = this(ssc, ssc.taskScheduler)
 
+  private val conf = env.conf
+
   private[spark] val metricsSource: StageSchedulerSource = new StageSchedulerSource(this)
 
   // TODO-lzp: StageScheduler/DAGScheduler存储的locs信息不同
   private val cacheLocs = new HashMap[Int, IndexedSeq[Seq[TaskLocation]]]
 
   private[siteDriver] val stageIdToStage = new HashMap[Int, Stage] // stageId -> Stage
+  // TODO-lzp: 目前还不清楚这有什么用, 记录subStage的Index
+  private[siteDriver] val stageIdToIdx = new HashMap[Int, Int] // stageId -> Index
   private[siteDriver] val stageIdToProperties = new HashMap[Int, Properties]
   private[siteDriver] val runningStages = new HashSet[Stage]
   private[siteDriver] val waitingStages = new HashSet[Stage]
   private[siteDriver] val failedStages = new HashSet[Stage]
   private[siteDriver] val shuffleIdToMapStage = new HashMap[Int, ShuffleMapStage]
+
+  val currentFiles: HashMap[String, Long] = new HashMap[String, Long]()
+  val currentJars: HashMap[String, Long] = new HashMap[String, Long]()
 
   // For tracking failed nodes, we use the MapOutputTracker's epoch number, which is sent with
   // every task. When we detect a node failing, we note the current epoch number and failed
@@ -104,6 +112,10 @@ class StageScheduler(
    */
   def taskStarted(task: Task[_], taskInfo: TaskInfo) {
     eventProcessLoop.post(BeginEvent(task, taskInfo))
+  }
+
+  def stageSubmitted(stage: StageDescription): Unit = {
+    eventProcessLoop.post(StageSubmitted(stage))
   }
 
   /**
@@ -171,6 +183,36 @@ class StageScheduler(
     eventProcessLoop.post(StageCancelled(stageId))
   }
 
+  // TODO-lzp: 目前的功能就只是简单的将GD的files/jars拉取到SD上, 这样方便E去获取, 但不完整
+  private def updateDependencies(newFiles: HashMap[String, Long], newJars: HashMap[String, Long]) {
+    lazy val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
+    synchronized {
+      // Fetch missing dependencies
+      for ((name, timestamp) <- newFiles if currentFiles.getOrElse(name, -1L) < timestamp) {
+        logInfo("Fetching " + name + " with timestamp " + timestamp)
+        // Fetch file with useCache mode, close cache for local mode.
+        Utils.fetchFile(name, new File(SparkFiles.getRootDirectory()), conf,
+          env.securityManager, hadoopConf, timestamp, useCache = false)
+        currentFiles(name) = timestamp
+      }
+      for ((name, timestamp) <- newJars) {
+        val localName = name.split("/").last
+        val currentTimeStamp = currentJars.get(name)
+          .orElse(currentJars.get(localName))
+          .getOrElse(-1L)
+        if (currentTimeStamp < timestamp) {
+          logInfo("Fetching " + name + " with timestamp " + timestamp)
+
+          // Fetch file with useCache mode, close cache for local mode.
+          Utils.fetchFile(name, new File(SparkFiles.getRootDirectory()), conf,
+            env.securityManager, hadoopConf, timestamp, useCache = false)
+
+          currentJars(name) = timestamp
+        }
+      }
+    }
+  }
+
   /**
    * Resubmit any failed stages. Ordinarily called after a small amount of time has passed since
    * the last fetch failure.
@@ -232,10 +274,12 @@ class StageScheduler(
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       stage match {
         case s: ShuffleMapStage =>
-          partitionsToCompute.map { id => (id, getPreferredLocs(stage.rdd, id)) }.toMap
+          partitionsToCompute.map { id =>
+            val p = s.calcPartitions(id)
+            (id, getPreferredLocs(stage.rdd, p)) }.toMap
         case s: ResultStage =>
           partitionsToCompute.map { id =>
-            val p = s.partitions(id)
+            val p = s.calcPartitions(id)
             (id, getPreferredLocs(stage.rdd, p))
           }.toMap
       }
@@ -301,15 +345,15 @@ class StageScheduler(
             val p: Int = stage.calcPartitions(id)
             val part = partitions(p)
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptId,
-              taskBinary, part, locs, stage.latestInfo.taskMetrics, properties, Option(jobId),
+              taskBinary, part, locs, id, stage.latestInfo.taskMetrics, properties, Option(jobId),
               Option(ssc.siteAppId), ssc.siteAppAttemptId)
           }
 
         case stage: ResultStage =>
           partitionsToCompute.map { id =>
+            val locs = taskIdToLocations(id)
             val p: Int = stage.calcPartitions(id)
             val part = partitions(p)
-            val locs = taskIdToLocations(id)
             new ResultTask(stage.id, stage.latestInfo.attemptId,
               taskBinary, part, locs, id, properties, stage.latestInfo.taskMetrics,
               Option(jobId), Option(ssc.siteAppId), ssc.siteAppAttemptId)
@@ -468,18 +512,17 @@ class StageScheduler(
             // Cast to ResultStage here because it's part of the ResultTask
             // TODO Refactor this out to a function that accepts a ResultStage
             val resultStage = stage.asInstanceOf[ResultStage]
-            val partId = resultStage.calcPartitions(rt.outputId)
-            if (resultStage.finishedResults(partId) == null) {
-              updateAccumulators(event)
-              // TODO-lzp: 赋予结果
-//              resultStage.finished(partId) = true
-              resultStage.numFinished += 1
-              if (resultStage.isSiteAvailble()) {
-                // TODO-lzp: 表示此集群上的ResultStage完成
-              }
-              // TODO-lzp: 应该将job.listener.taskSuccessed的结果传回, 而非将event.result的结果
-              // 想法是将resultHandler处理的结果存储到ResultStage, 再将结果返回
-              // 但是ResultHandler没有返回值
+            updateAccumulators(event)
+            resultStage.addPartResult(rt.outputId, event.result)
+            if (resultStage.isSiteAvailble()) {
+              val result = Stage.serializeStageResult(
+                resultStage.id,
+                resultStage.calcPartitions,
+                resultStage.getPartResults,
+                closureSerializer
+              )
+              taskScheduler.asInstanceOf[TaskSchedulerImpl].backend
+                .reportStageFinished(result)
             }
 
           case smt: ShuffleMapTask =>
@@ -491,7 +534,7 @@ class StageScheduler(
             if (failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
               logInfo(s"Ignoring possibly bogus $smt completion from executor $execId")
             } else {
-              shuffleStage.addOutputLoc(smt.partitionId, status)
+              shuffleStage.addPartResult(smt.outputId, status)
             }
 
             if (runningStages.contains(shuffleStage) && shuffleStage.pendingPartitions.isEmpty) {
@@ -509,8 +552,20 @@ class StageScheduler(
               //       we registered these map outputs.
               mapOutputTracker.registerMapOutputs(
                 shuffleStage.shuffleDep.shuffleId,
-                shuffleStage.outputLocInMapOutputTrackerFormat(),
+                shuffleStage.calcPartitions,
+                shuffleStage.getPartResults,
+                // TODO-lzp: 不是很确定是否要更改
                 changeEpoch = true)
+
+              // 报告结果, 向mapOutput注册想了想还是在GD中进行吧
+              val result = Stage.serializeStageResult(
+                shuffleStage.id,
+                shuffleStage.calcPartitions,
+                shuffleStage.getPartResults,
+                closureSerializer
+              )
+              taskScheduler.asInstanceOf[TaskSchedulerImpl].backend
+                .reportStageFinished(result)
 
               clearCacheLocs()
 
@@ -651,8 +706,10 @@ class StageScheduler(
           stage.removeOutputsOnExecutor(execId)
           mapOutputTracker.registerMapOutputs(
             shuffleId,
-            stage.outputLocInMapOutputTrackerFormat(),
-            changeEpoch = true)
+            stage.calcPartitions,
+            stage.getPartResults,
+            changeEpoch = true
+          )
         }
         if (shuffleIdToMapStage.isEmpty) {
           mapOutputTracker.incrementEpoch()
@@ -675,6 +732,21 @@ class StageScheduler(
 
   private[siteDriver] def handleStageCancellation(stageId: Int): Unit = {
     failStage(stageId, s"because Stage $stageId was cancelled")
+  }
+
+  private[siteDriver] def handleStageSubmitted(stageDesc: StageDescription): Unit = {
+    val (stageFiles, stageJars, stageProps, parts, jobId, stageBytes) =
+      Stage.deserializeWithDependencies(stageDesc.serializedStage)
+    val subStageIdx = stageDesc.index
+    stageIdToIdx(stageDesc.stageId) = subStageIdx
+    val stage = closureSerializer.deserialize[Stage](stageBytes)
+    stage.init(parts)
+    // TODO-lzp: to delete
+    logInfo(stage.toDebugString())
+    stageIdToStage(stage.id) = stage
+    stageIdToProperties(stage.id) = stageProps
+    updateDependencies(stageFiles, stageJars)
+    submitMissingTasks(stage, jobId, stageProps)
   }
 
   // TODO-lzp: 取消在此SiteDriver执行的所有Stages
@@ -793,11 +865,10 @@ class StageScheduler(
       return Nil
     }
     // If the partition is cached, return the cache locations
-    // TODO-lzp: 主要还是不知道分布式的RDD的缓存应该如何进行, 以及cacheLocs到底应该在GD/SD上
-//    val cached = getCacheLocs(rdd)(partition)
-//    if (cached.nonEmpty) {
-//      return cached
-//    }
+    val cached = getCacheLocs(rdd)(partition)
+    if (cached.nonEmpty) {
+      return cached
+    }
     // If the RDD has some placement preferences (as is the case for input RDDs), get those
     val rddPrefs = rdd.preferredLocations(rdd.partitions(partition)).toList
     if (rddPrefs.nonEmpty) {
@@ -860,6 +931,9 @@ private[siteDriver] class StageSchedulerEventProcessLoop(stageScheduler: StageSc
   private def doOnReceive(event: StageSchedulerEvent): Unit = event match {
     case StageCancelled(stageId) =>
       stageScheduler.handleStageCancellation(stageId)
+
+    case StageSubmitted(stage) =>
+      stageScheduler.handleStageSubmitted(stage)
 
     case ExecutorAdded(execId, host) =>
       stageScheduler.handleExecutorAdded(execId, host)

@@ -1476,6 +1476,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
       logInfo(s"Added file $path at $key with timestamp $timestamp")
       // Fetch the file locally so that closures which are run on the driver can still use the
       // SparkFiles API to access files.
+      // TODO-lzp: 这里HDFS的文件反而不是全局了, 如果添加file, 则file最好在当前集群的HDFS中存在.
       Utils.fetchFile(uri.toString, new File(SparkFiles.getRootDirectory()), conf,
         env.securityManager, hadoopConfiguration, timestamp, useCache = false)
       postEnvironmentUpdate()

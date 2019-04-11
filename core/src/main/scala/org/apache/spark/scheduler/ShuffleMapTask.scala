@@ -56,6 +56,7 @@ private[spark] class ShuffleMapTask(
     taskBinary: Broadcast[Array[Byte]],
     partition: Partition,
     @transient private var locs: Seq[TaskLocation],
+  val outputId: Int,
     metrics: TaskMetrics,
     localProperties: Properties,
     jobId: Option[Int] = None,
@@ -67,7 +68,7 @@ private[spark] class ShuffleMapTask(
 
   /** A constructor used only in test suites. This does not require passing in an RDD. */
   def this(partitionId: Int) {
-    this(0, 0, null, new Partition { override def index: Int = 0 }, null, null, new Properties)
+    this(0, 0, null, new Partition { override def index: Int = 0 }, null, 0, null, new Properties)
   }
 
   @transient private val preferredLocs: Seq[TaskLocation] = {

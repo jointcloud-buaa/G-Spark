@@ -17,13 +17,20 @@
 
 package org.apache.spark.scheduler
 
-import scala.collection.mutable.HashSet
+import java.io.{DataInputStream, DataOutputStream}
+import java.nio.ByteBuffer
+import java.util.Properties
+
+import scala.collection.mutable
+import scala.collection.mutable.{HashMap, HashSet}
+import scala.reflect.ClassTag
 
 import org.apache.spark._
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
-import org.apache.spark.util.CallSite
+import org.apache.spark.serializer.SerializerInstance
+import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, CallSite, Utils}
 
 /**
  * A stage is a set of parallel tasks all computing the same function that need to run as part
@@ -64,12 +71,14 @@ private[spark] abstract class Stage(
     val callSite: CallSite)
   extends Logging {
 
-  val numPartitions = rdd.partitions.length
+  val numPartitions: Int = rdd.partitions.length
 
   /** Set of jobs that this stage belongs to. */
   @transient val jobIds = new HashSet[Int]
 
   val pendingPartitions = new HashSet[Int]
+
+  def init(parts: Array[Int]): Unit
 
   private var _calcPartitions: Array[Int] = _
 
@@ -138,9 +147,143 @@ private[spark] abstract class Stage(
 
   /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
   def findMissingPartitions(): Seq[Int]
+
+  def findGlobalMissingPartitions(): Seq[Int]
+
+  def toDebugString(): String = {
+    s"""the stage($id):
+       |name: $name
+       |numTasks: $numTasks
+       |rdd: $rdd
+       |numPartitions: $numPartitions
+       |calcPartitions: $calcPartitions
+       |pendingPartitions: $pendingPartitions
+     """.stripMargin
+  }
 }
 
 private[spark] object Stage {
   // The number of consecutive failures allowed before a stage is aborted
   val MAX_CONSECUTIVE_FETCH_FAILURES = 4
+
+  def serializeWithDependencies(
+    stage: Stage,
+    jobId: Int,
+    parts: Array[Int],
+    properties: Properties,
+    currentFiles: mutable.Map[String, Long],
+    currentJars: mutable.Map[String, Long],
+    serializer: SerializerInstance)
+  : ByteBuffer = {
+
+    val out = new ByteBufferOutputStream(4096)
+    val dataOut = new DataOutputStream(out)
+
+    // Write currentFiles
+    dataOut.writeInt(currentFiles.size)
+    for ((name, timestamp) <- currentFiles) {
+      dataOut.writeUTF(name)
+      dataOut.writeLong(timestamp)
+    }
+
+    // Write currentJars
+    dataOut.writeInt(currentJars.size)
+    for ((name, timestamp) <- currentJars) {
+      dataOut.writeUTF(name)
+      dataOut.writeLong(timestamp)
+    }
+
+    // Write the task properties separately so it is available before full task deserialization.
+    val propBytes = Utils.serialize(properties)
+    dataOut.writeInt(propBytes.length)
+    dataOut.write(propBytes)
+
+    dataOut.writeInt(parts.length)
+    parts.foreach(i => dataOut.writeInt(i))
+
+    dataOut.writeInt(jobId)
+
+    // Write the task itself and finish
+    dataOut.flush()
+    val stageBytes = serializer.serialize(stage)
+    Utils.writeByteBuffer(stageBytes, out)
+    out.close()
+    out.toByteBuffer
+  }
+
+  def deserializeWithDependencies(serializedStage: ByteBuffer)
+  : (HashMap[String, Long], HashMap[String, Long], Properties, Array[Int], Int, ByteBuffer) = {
+
+    val in = new ByteBufferInputStream(serializedStage)
+    val dataIn = new DataInputStream(in)
+
+    // Read task's files
+    val stageFiles = new HashMap[String, Long]()
+    val numFiles = dataIn.readInt()
+    for (i <- 0 until numFiles) {
+      stageFiles(dataIn.readUTF()) = dataIn.readLong()
+    }
+
+    // Read task's JARs
+    val stageJars = new HashMap[String, Long]()
+    val numJars = dataIn.readInt()
+    for (i <- 0 until numJars) {
+      stageJars(dataIn.readUTF()) = dataIn.readLong()
+    }
+
+    val propLength = dataIn.readInt()
+    val propBytes = new Array[Byte](propLength)
+    dataIn.readFully(propBytes, 0, propLength)
+    val stageProps = Utils.deserialize[Properties](propBytes)
+
+    val aryLen = dataIn.readInt()
+    val parts = Array.ofDim[Int](aryLen)
+    (0 until aryLen).foreach(idx => parts(idx) = dataIn.readInt())
+
+    val jobId = dataIn.readInt()
+
+    // Create a sub-buffer for the rest of the data, which is the serialized Task object
+    val subBuffer = serializedStage.slice()  // ByteBufferInputStream will have read just up to task
+    (stageFiles, stageJars, stageProps, parts, jobId, subBuffer)
+  }
+
+  def serializeStageResult(
+    stageId: Int,
+    parts: Array[Int],
+    results: Array[_],
+    serializer: SerializerInstance
+  ): ByteBuffer = {
+    val out = new ByteBufferOutputStream(4096)
+    val dataOut = new DataOutputStream(out)
+
+    dataOut.writeInt(stageId)
+
+    dataOut.writeInt(parts.length)
+    parts.foreach(dataOut.writeInt)
+
+    dataOut.flush()
+    val resultBytes = serializer.serialize(results)
+    Utils.writeByteBuffer(resultBytes, out)
+
+    out.close()
+    out.toByteBuffer
+  }
+
+  def deserializeStageResult(
+    serializedResult: ByteBuffer,
+    serializer: SerializerInstance
+  ): (Array[_], Array[Int], Int) = {
+    val in = new ByteBufferInputStream(serializedResult)
+    val dataIn = new DataInputStream(in)
+
+    val stageId = dataIn.readInt()
+
+    val partsLen = dataIn.readInt()
+    val parts = Array.ofDim[Int](partsLen)
+    (0 until partsLen).foreach(idx => parts(idx) = dataIn.readInt())
+
+    val subBuffer = serializedResult.slice()
+    val results = serializer.deserialize[Array[_]](subBuffer)
+    (results, parts, stageId)
+  }
 }

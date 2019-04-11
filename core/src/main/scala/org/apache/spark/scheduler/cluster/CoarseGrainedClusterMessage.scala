@@ -21,7 +21,7 @@ import java.nio.ByteBuffer
 
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.rpc.RpcEndpointRef
-import org.apache.spark.scheduler.{ExecutorLossReason, SiteDriverLossReason}
+import org.apache.spark.scheduler.{ExecutorLossReason, SiteDriverLossReason, StageDescription}
 import org.apache.spark.util.SerializableBuffer
 
 private[spark] sealed trait CoarseGrainedClusterMessage extends Serializable
@@ -92,6 +92,13 @@ private[spark] object CoarseGrainedClusterMessages {
 
   // Used internally by executors to shut themselves down.
   case object Shutdown extends CoarseGrainedClusterMessage
+
+  case class LaunchStages(stages: Seq[StageDescription]) extends CoarseGrainedClusterMessage
+
+  case class LaunchStage(data: SerializableBuffer) extends CoarseGrainedClusterMessage
+
+  case class SubStageFinished(sdriverId: String, data: SerializableBuffer)
+    extends CoarseGrainedClusterMessage
 
   // TODO-lzp: 不是很明白为什么下面的消息放到另一个文件就不识别了
   // Driver to executors

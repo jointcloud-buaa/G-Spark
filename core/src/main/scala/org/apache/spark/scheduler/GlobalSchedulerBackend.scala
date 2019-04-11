@@ -32,4 +32,8 @@ private[spark] trait GlobalSchedulerBackend {
   def applicationAttemptId(): Option[String] = None
 
   def getDriverLogUrls: Option[Map[String, String]] = None
+
+  def launchStages(stages: Seq[StageDescription]): Unit
+
+  def getSiteDriverIds: Seq[String]
 }

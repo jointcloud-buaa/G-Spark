@@ -382,8 +382,15 @@ private[spark] class MapOutputTrackerMaster(conf: SparkConf,
   }
 
   /** Register multiple map output information for the given shuffle */
-  def registerMapOutputs(shuffleId: Int, statuses: Array[MapStatus], changeEpoch: Boolean = false) {
-    mapStatuses.put(shuffleId, statuses.clone())
+  def registerMapOutputs(
+    shuffleId: Int,
+    parts: Array[Int],
+    statuses: Array[MapStatus],
+    changeEpoch: Boolean = false) {
+    val cloneStatuses = statuses.clone()
+    for (part <- parts) {
+      mapStatuses(shuffleId)(part) = cloneStatuses(part)
+    }
     if (changeEpoch) {
       incrementEpoch()
     }
