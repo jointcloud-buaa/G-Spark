@@ -37,7 +37,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
-import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, JobSucceeded, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SparkListenerExecutorMetricsUpdate, SparkListenerJobEnd, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
+import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, CompressedMapStatus, ExecutorLossReason, ExecutorSlaveLost, HighlyCompressedMapStatus, JobSucceeded, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SparkListenerExecutorMetricsUpdate, SparkListenerJobEnd, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
@@ -558,10 +558,15 @@ class StageScheduler(
                 changeEpoch = true)
 
               // 报告结果, 向mapOutput注册想了想还是在GD中进行吧
+              val bmId = env.blockManager.blockManagerId
+              // 这里进行了替换, 这样在GD看来, 此集群使用同一个blockManagerId
+              val newMapStatuses = shuffleStage.getPartResults.map { ms =>
+                Option(ms).map(_.replaceLoc(bmId)).getOrElse(null)
+              }
               val result = Stage.serializeStageResult(
                 shuffleStage.id,
                 shuffleStage.calcPartitions,
-                shuffleStage.getPartResults,
+                newMapStatuses,
                 closureSerializer
               )
               taskScheduler.asInstanceOf[TaskSchedulerImpl].backend
@@ -741,6 +746,26 @@ class StageScheduler(
     stageIdToIdx(stageDesc.stageId) = subStageIdx
     val stage = closureSerializer.deserialize[Stage](stageBytes)
     stage.init(parts)
+
+    // 注册下Shuffle
+    stage match {
+      case sms: ShuffleMapStage =>
+        val shuffleStage = stage.asInstanceOf[ShuffleMapStage]
+        val dep = shuffleStage.shuffleDep
+        if (mapOutputTracker.containsShuffle(dep.shuffleId)) {
+          val serLocs = mapOutputTracker.getSerializedMapOutputStatuses(dep.shuffleId)
+          val locs = MapOutputTracker.deserializeMapStatuses(serLocs)
+          locs.indices.foreach { idx =>
+            if (locs(idx) ne null) {
+              shuffleStage.addPartResult(idx, locs(idx))
+            }
+          }
+        } else {
+          mapOutputTracker.registerShuffle(dep.shuffleId, stage.calcPartitions.length)
+        }
+      case _ =>
+    }
+
     // TODO-lzp: to delete
     logInfo(stage.toDebugString())
     stageIdToStage(stage.id) = stage

@@ -396,6 +396,15 @@ private[spark] class MapOutputTrackerMaster(conf: SparkConf,
     }
   }
 
+  /** Register multiple map output information for the given shuffle */
+  def registerGlobalMapOutputs(
+    shuffleId: Int, statuses: Array[MapStatus], changeEpoch: Boolean = false) {
+    mapStatuses.put(shuffleId, statuses.clone())
+    if (changeEpoch) {
+      incrementEpoch()
+    }
+  }
+
   /** Unregister map output information of the given shuffle, mapper and block manager */
   def unregisterMapOutput(shuffleId: Int, mapId: Int, bmAddress: BlockManagerId) {
     val arrayOpt = mapStatuses.get(shuffleId)

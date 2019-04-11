@@ -39,6 +39,8 @@ private[spark] sealed trait MapStatus {
    * necessary for correctness, since block fetchers are allowed to skip zero-size blocks.
    */
   def getSizeForBlock(reduceId: Int): Long
+
+  def replaceLoc(newLoc: BlockManagerId): MapStatus
 }
 
 
@@ -100,6 +102,9 @@ private[spark] class CompressedMapStatus(
     this(loc, uncompressedSizes.map(MapStatus.compressSize))
   }
 
+  override def replaceLoc(newLoc: BlockManagerId): CompressedMapStatus =
+    new CompressedMapStatus(newLoc, this.compressedSizes)
+
   override def location: BlockManagerId = loc
 
   override def getSizeForBlock(reduceId: Int): Long = {
@@ -141,6 +146,9 @@ private[spark] class HighlyCompressedMapStatus private (
     "Average size can only be zero for map stages that produced no output")
 
   protected def this() = this(null, -1, null, -1)  // For deserialization only
+
+  override def replaceLoc(newLoc: BlockManagerId): MapStatus =
+    new HighlyCompressedMapStatus(newLoc, numNonEmptyBlocks, emptyBlocks, avgSize)
 
   override def location: BlockManagerId = loc
 

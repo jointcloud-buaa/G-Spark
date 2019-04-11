@@ -408,9 +408,9 @@ class CoarseGrainedSchedulerBackend(
   }
 
   override def reportStageFinished(data: ByteBuffer): Unit = {
-    gdriverEndpoint.foreach(_.send(SubStageFinished(
-      siteDriverId,
-      new SerializableBuffer(data))))
+    gdriverEndpoint.foreach(_.send(
+      SubStageFinished(siteDriverId, new SerializableBuffer(data))
+    ))
   }
 
   protected def createDriverEndpointRef(
