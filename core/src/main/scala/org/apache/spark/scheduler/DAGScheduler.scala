@@ -114,7 +114,7 @@ private[spark]
 class DAGScheduler(
     private[scheduler] val sc: SparkContext,
     listenerBus: LiveListenerBus,
-    mapOutputTracker: MapOutputTrackerMaster,
+    mapOutputTracker: MapOutputTrackerGlobalMaster,
     blockManagerMaster: BlockManagerMaster,
     env: SparkEnv,
     clock: Clock = new SystemClock())
@@ -124,7 +124,7 @@ class DAGScheduler(
     this(
       sc,
       sc.listenerBus,
-      sc.env.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster],
+      sc.env.mapOutputTracker.asInstanceOf[MapOutputTrackerGlobalMaster],
       sc.env.blockManager.master,
       sc.env)
   }
@@ -356,8 +356,7 @@ class DAGScheduler(
       // A previously run stage generated partitions for this shuffle, so for each output
       // that's still available, copy information about that output location to the new stage
       // (so we don't unnecessarily re-compute that data).
-      val serLocs = mapOutputTracker.getSerializedMapOutputStatuses(shuffleDep.shuffleId)
-      val locs = MapOutputTracker.deserializeMapStatuses(serLocs)
+      val locs = mapOutputTracker.getMapOutputStatuses(shuffleDep.shuffleId)
       locs.indices.foreach { i =>
         if (locs(i) ne null) {
           // locs(i) will be null if missing
@@ -1049,7 +1048,20 @@ class DAGScheduler(
             // 的分区, 因此pendingPartitions结束不代表Stage可用, 改起来也还行, 就是得搞明白序列化的一些
             // 事, 即pendingPartitions在GD/SD的存在
             if (runningStages.contains(sms) && sms.isAvailable) {
+              markStageAsFinished(sms)
+              logInfo("looking for newly runnable stages")
+              logInfo("running: " + runningStages)
+              logInfo("waiting: " + waitingStages)
+              logInfo("failed: " + failedStages)
+              mapOutputTracker.registerGlobalMapOutputs(
+                sms.shuffleDep.shuffleId,
+                sms.outputLocInMapOutputTrackerFormat(),
+                changeEpoch = true
+              )
+              clearCacheLocs()
 
+              // 提交子Stage
+              submitWaitingChildStages(sms)
             }
         }
       }

@@ -71,7 +71,6 @@ private[spark] trait MapOutputTracker extends Logging {
 
   protected val epochLock = new AnyRef
 
-
   /** Remembers which map output locations are currently being fetched on an executor. */
   private val fetching = new HashSet[Int]
 
@@ -100,6 +99,13 @@ private[spark] trait MapOutputTracker extends Logging {
     }
   }
 
+  def incrementEpoch() {
+    epochLock.synchronized {
+      epoch += 1
+      logDebug("Increasing epoch to " + epoch)
+    }
+  }
+
   /**
    * Called from executors to update the epoch number, potentially clearing old outputs
    * because of a fetch failure. Each executor task calls this with the latest epoch
@@ -112,6 +118,23 @@ private[spark] trait MapOutputTracker extends Logging {
         epoch = newEpoch
         mapStatuses.clear()
       }
+    }
+  }
+
+  /**
+   * Return statistics about all of the outputs for a given shuffle.
+   */
+  def getStatistics(dep: ShuffleDependency[_, _, _]): MapOutputStatistics = {
+    val statuses = getStatuses(dep.shuffleId)
+    // Synchronize on the returned array because, on the driver, it gets mutated in place
+    statuses.synchronized {
+      val totalSizes = new Array[Long](dep.partitioner.numPartitions)
+      for (s <- statuses) {
+        for (i <- 0 until totalSizes.length) {
+          totalSizes(i) += s.getSizeForBlock(i)
+        }
+      }
+      new MapOutputStatistics(dep.shuffleId, totalSizes)
     }
   }
 
@@ -189,6 +212,28 @@ private[spark] trait MapOutputTracker extends Logging {
 private[spark] class MapOutputTrackerGlobalMaster(conf: SparkConf) extends MapOutputTracker {
 
   protected val mapStatuses = new ConcurrentHashMap[Int, Array[MapStatus]]().asScala
+
+  /** Register multiple map output information for the given shuffle */
+  def registerGlobalMapOutputs(
+    shuffleId: Int, statuses: Array[MapStatus], changeEpoch: Boolean = false) {
+    mapStatuses.put(shuffleId, statuses.clone())
+    if (changeEpoch) {
+      incrementEpoch()
+    }
+  }
+
+  def registerShuffle(shuffleId: Int, numMaps: Int) {
+    if (mapStatuses.put(shuffleId, new Array[MapStatus](numMaps)).isDefined) {
+      throw new IllegalArgumentException("Shuffle ID " + shuffleId + " registered twice")
+    }
+  }
+
+  /** Check if the given shuffle is being tracked */
+  def containsShuffle(shuffleId: Int): Boolean = {
+    mapStatuses.contains(shuffleId)
+  }
+
+  def getMapOutputStatuses(shuffleId: Int): Array[MapStatus] = mapStatuses(shuffleId)
 
   override def stop(): Unit = {}
 }
@@ -331,14 +376,6 @@ private[spark] class MapOutputTrackerMaster(conf: SparkConf,
     }
   }
 
-  /** Register multiple map output information for the given shuffle */
-  def registerGlobalMapOutputs(
-    shuffleId: Int, statuses: Array[MapStatus], changeEpoch: Boolean = false) {
-    mapStatuses.put(shuffleId, statuses.clone())
-    if (changeEpoch) {
-      incrementEpoch()
-    }
-  }
 
   /** Unregister map output information of the given shuffle, mapper and block manager */
   def unregisterMapOutput(shuffleId: Int, mapId: Int, bmAddress: BlockManagerId) {
@@ -444,30 +481,6 @@ private[spark] class MapOutputTrackerMaster(conf: SparkConf,
       }
     }
     None
-  }
-
-  /**
-   * Return statistics about all of the outputs for a given shuffle.
-   */
-  def getStatistics(dep: ShuffleDependency[_, _, _]): MapOutputStatistics = {
-    val statuses = getStatuses(dep.shuffleId)
-    // Synchronize on the returned array because, on the driver, it gets mutated in place
-    statuses.synchronized {
-      val totalSizes = new Array[Long](dep.partitioner.numPartitions)
-      for (s <- statuses) {
-        for (i <- 0 until totalSizes.length) {
-          totalSizes(i) += s.getSizeForBlock(i)
-        }
-      }
-      new MapOutputStatistics(dep.shuffleId, totalSizes)
-    }
-  }
-
-  def incrementEpoch() {
-    epochLock.synchronized {
-      epoch += 1
-      logDebug("Increasing epoch to " + epoch)
-    }
   }
 
   private def removeBroadcast(bcast: Broadcast[_]): Unit = {
