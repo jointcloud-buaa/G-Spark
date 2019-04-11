@@ -204,13 +204,14 @@ object SparkEnv extends Logging {
     // TODO-IMP: 此处的1st参数, 至少在当前实现中, 没有用
     val broadcastManager = new BroadcastManager(true, conf, securityManager)
 
-    val mapOutputTracker = new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
+    val mapOutputTracker = new MapOutputTrackerGlobalMaster(conf)
     logInfo("Registering " + MapOutputTracker.ENDPOINT_NAME)
-    mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
-      MapOutputTracker.ENDPOINT_NAME,
-      new MapOutputTrackerMasterEndpoint(
-        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf)
-    )
+    // TODO-lzp: 目前没想到MOTGM需要跟谁通信
+//    mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
+//      MapOutputTracker.ENDPOINT_NAME,
+//      new MapOutputTrackerMasterEndpoint(
+//        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf)
+//    )
 
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
