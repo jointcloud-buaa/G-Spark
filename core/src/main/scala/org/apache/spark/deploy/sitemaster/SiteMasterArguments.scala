@@ -25,6 +25,7 @@ import org.apache.spark.util.{IntParam, Utils}
 private[sitemaster] class SiteMasterArguments(args: Array[String], conf: SparkConf) {
   var host = Utils.localHostName()
   var port = 7088
+  var clusterName: String = _
   var webUiPort = 8090
   var cores = Utils.inferDefaultCores()
   var memory = Utils.inferDefaultMemory()
@@ -38,6 +39,9 @@ private[sitemaster] class SiteMasterArguments(args: Array[String], conf: SparkCo
   }
   if (System.getenv("SPARK_SITE_MASTER_PORT") != null) {  // for rpc port
     port = System.getenv("SPARK_SITE_MASTER_PORT").toInt
+  }
+  if (System.getenv("SPARK_SITE_MASTER_NAME") != null) {  // for rpc port
+    clusterName = System.getenv("SPARK_SITE_MASTER_NAME")
   }
   if (System.getenv("SPARK_SITE_MASTER_WEBUI_PORT") != null) {  // for webUi port
     webUiPort = System.getenv("SPARK_SITE_MASTER_WEBUI_PORT").toInt
@@ -70,6 +74,10 @@ private[sitemaster] class SiteMasterArguments(args: Array[String], conf: SparkCo
 
     case ("--port" | "-p") :: IntParam(value) :: tail =>
       port = value
+      parse(tail)
+
+    case ("--name" | "-n") :: value :: tail =>
+      clusterName = value
       parse(tail)
 
     case ("--cores" | "-c") :: IntParam(value) :: tail =>

@@ -49,6 +49,7 @@ private[spark] object CoarseGrainedClusterMessages {
   case class RegisterSiteDriver(
     siteDriverId: String,
     siteDriverRef: RpcEndpointRef,
+    clusterName: String,
     hostname: String,
     cores: Int,
     logUrls: Map[String, String]

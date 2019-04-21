@@ -22,11 +22,10 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import scala.annotation.tailrec
 import scala.collection.Map
-import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Stack}
+import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Map => MMap, Stack}
 import scala.concurrent.duration._
 import scala.language.existentials
 import scala.language.postfixOps
-import scala.util.Random
 import scala.util.control.NonFatal
 
 import org.apache.commons.lang3.SerializationUtils
@@ -37,9 +36,10 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
-import org.apache.spark.rdd.{RDD, RDDCheckpointData}
+import org.apache.spark.rdd.{NewMCHadoopRDD, RDD, RDDCheckpointData, ShuffledRDD}
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
+import org.apache.spark.scheduler.cluster.NetworkDistState
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
@@ -129,6 +129,9 @@ class DAGScheduler(
       sc.env)
   }
 
+  private[spark] lazy val clusterToHost = backend.clusterNameToHostName
+  private[spark] lazy val hostnameToSDriverId = backend.hostnameToSDriverId
+
   private[spark] val metricsSource: DAGSchedulerSource = new DAGSchedulerSource(this)
 
   private[scheduler] val nextJobId = new AtomicInteger(0)
@@ -209,7 +212,8 @@ class DAGScheduler(
 
 
   // TODO-lzp: 是要收集所有集群的所有执行器的核心数, 还是怎么做
-  def defaultParallelism(): Int = 3
+//  def defaultParallelism(): Int = backend.defaultParallelism()
+  def defaultParallelism(): Int = 100
 
   // 从这里可看出, appId是取决于调度器后端的
   def applicationId(): String = backend.applicationId()
@@ -952,14 +956,16 @@ class DAGScheduler(
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 
     val partitionsToCompute: Seq[Int] = stage.findGlobalMissingPartitions()
-    val mapIdToLocations: Map[Int, Seq[TaskLocation]] = try {
+    val taskIdToDataDist: Map[Int, Map[String, Long]] = try {
       stage match {
         case s: ShuffleMapStage =>
-          partitionsToCompute.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
+          partitionsToCompute.map { id =>
+            (id, getDataDist(stage.rdd, id))
+          }.toMap
         case s: ResultStage =>
           partitionsToCompute.map { id =>
             val p = s.partitions(id)
-            (id, getPreferredLocs(stage.rdd, p))
+            (id, getDataDist(stage.rdd, p))
           }.toMap
       }
     } catch {
@@ -970,32 +976,103 @@ class DAGScheduler(
         runningStages -= stage
         return
     }
-    // TODO-lzp: 根据mapId的分布获取数据分布
 
-    val stageDesc = buildStageDescription(stage, jobId, properties)
+    val bwDist = getBandwitchDist()
+
+    val stageDesc = buildStageDescription(jobId, stage, taskIdToDataDist, bwDist, properties)
     backend.launchStages(stageDesc)
   }
 
-  // TODO-lzp: BlockToLocation(数据分布), BandwitchDistribute(带宽分布)
-  // 前者: 1, MapOutputGlobalMaster, 2, catchLocs
-  // 后者: 从GlobalMaster中获取信息
   def buildStageDescription(
-    stage: Stage, jobId: Int, properties: Properties): Seq[StageDescription] = {
-    val allPartitions = stage match {
+    jobId: Int,
+    stage: Stage,
+    dataDistState: Map[Int, Map[String, Long]],  // reduceId -> host -> size
+    bwDistState: NetworkDistState,
+    properties: Properties
+  ): Seq[StageDescription] = {
+    val allPartitions: Seq[Int] = stage match {
       case s: ShuffleMapStage =>
-        (0 until s.numPartitions).toSeq
+        0 until s.numPartitions
       case r: ResultStage =>
         r.partitions.toSeq
     }
-    val shufflePartitons = Random.shuffle(allPartitions).toArray
-    val sdriverIds = backend.getSiteDriverIds
-    val parts = shufflePartitons.grouped(shufflePartitons.length / sdriverIds.length + 1).toArray
-    val desc = parts.zipWithIndex.map { case (part, idx) =>
-      val serializedStage = Stage.serializeWithDependencies(
-        stage, jobId, part, properties, sc.addedFiles, sc.addedJars, closureSerializer)
-      new StageDescription(stage.id, sdriverIds(idx), idx, serializedStage)
+
+    val allHosts = clusterToHost.values.toArray
+    val hostToParts = MMap.empty[String, ArrayBuffer[Int]]
+    for (part <- allPartitions) {
+      // TODO-lzp: 这里有没有可能为空
+      val dataDist = dataDistState(part)
+      val timeToCluster: Array[(Double, String)] = allHosts.map { runHost =>
+        val costT = allHosts.withFilter(_ != runHost).map { othHost =>
+          val aIdx = bwDistState.idxMap(runHost)
+          val bIdx = bwDistState.idxMap(othHost)
+          val costTLatency = bwDistState.latencies(aIdx)(bIdx)
+          val costTTrans =
+            dataDist.getOrElse[Long](othHost, 0).toDouble / bwDistState.bws(aIdx)(bIdx)
+          // TODO-lzp: 未考虑计算时间
+          costTLatency + costTTrans
+        }
+        (costT.max, runHost)
+      }
+      val bestHost = timeToCluster.minBy(_._1)._2
+      if (!hostToParts.contains(bestHost)) hostToParts(bestHost) = ArrayBuffer.empty
+      hostToParts(bestHost) += part
     }
+
+    val desc = hostToParts.zipWithIndex.map { case ((host, parts), idx) =>
+      val serializedStage = Stage.serializeWithDependencies(
+        stage, jobId, parts.toArray, properties, sc.addedFiles, sc.addedJars, closureSerializer)
+        new StageDescription(stage.id, hostnameToSDriverId(host), idx, serializedStage)
+    }.toSeq
     desc
+  }
+
+  // TODO-lzp: 从GM处获取带宽测量数据
+  def getBandwitchDist(): NetworkDistState = {
+    val tmp = Predef.Map("act-33-36" -> 0, "act-37-41" -> 1, "act-42-46" -> 2)
+    NetworkDistState.const(
+      tmp.map{ case (cluster, idx) => (clusterToHost(cluster), idx)},
+      1000,
+      0
+    )
+  }
+
+  // TODO-lzp: 获取数据分布
+  def getDataDist(rdd: RDD[_], part: Int): Map[String, Long] = {
+    getDataDistInternal(rdd, part, new HashSet)
+  }
+
+  private def getDataDistInternal(
+    rdd: RDD[_], part: Int, visited: HashSet[(RDD[_], Int)]): Map[String, Long] = {
+    if (!visited.add((rdd, part))) {
+      return Map.empty
+    }
+
+    // TODO-lzp: 如何考虑persist的缓存
+//    val cached = getCacheLocs(rdd)(part)   // 获取指定分区的位置集 Seq[Location]
+//    if (cached.nonEmpty) {
+//      return cached
+//    }
+    val rddDataDist = rdd.dataDist(part)
+    if (rddDataDist.nonEmpty) return rddDataDist
+
+    rdd.dependencies.foreach {
+      // TODO-lzp: 当有多个父分区时, 不确定要如何做, 以及要不要给RDD加入集群感知
+      case n: NarrowDependency[_] =>
+        val rst = MMap.empty[String, Long]
+        for (inPart <- n.getParents(part)) {
+          val locs = getDataDistInternal(n.rdd, inPart, visited)
+          if (locs.nonEmpty) {
+            locs.foreach { case (k, v) =>
+              rst(k) = rst.getOrElse[Long](k, 0) + v
+            }
+          }
+        }
+        return rst
+      case _ =>
+    }
+
+    Map.empty[String, Long]
   }
 
   // TODO-lzp: 处理site driver lost
@@ -1237,68 +1314,6 @@ class DAGScheduler(
 
   }
 
-  /**
-   * Gets the locality information associated with a partition of a particular RDD.
-   *
-   * This method is thread-safe and is called from both DAGScheduler and SparkContext.
-   *
-   * @param rdd whose partitions are to be looked at
-   * @param partition to lookup locality information for
-   * @return list of machines that are preferred by the partition
-   */
-  // TODO-lzp: 其实概念是这样的, 我们将preferedLocs信息分成两部分: 一部分是关于集群的, 一部分是关于节点的
-  private[spark]
-  def getPreferredLocs(rdd: RDD[_], partition: Int): Seq[TaskLocation] = {
-    getPreferredLocsInternal(rdd, partition, new HashSet)
-  }
-
-  /**
-   * Recursive implementation for getPreferredLocs.
-   *
-   * This method is thread-safe because it only accesses DAGScheduler state through thread-safe
-   * methods (getCacheLocs()); please be careful when modifying this method, because any new
-   * DAGScheduler state accessed by it may require additional synchronization.
-   */
-  private def getPreferredLocsInternal(
-    rdd: RDD[_],
-    partition: Int,
-    visited: HashSet[(RDD[_], Int)]): Seq[TaskLocation] = {
-    // If the partition has already been visited, no need to re-visit.
-    // This avoids exponential path exploration.  SPARK-695
-    if (!visited.add((rdd, partition))) {
-      // Nil has already been returned for previously visited partitions.
-      return Nil
-    }
-    // If the partition is cached, return the cache locations
-    val cached = getCacheLocs(rdd)(partition)
-    if (cached.nonEmpty) {
-      return cached
-    }
-    // If the RDD has some placement preferences (as is the case for input RDDs), get those
-    // TODO-lzp: 1个是HDFSRDD的位置
-    val rddPrefs = rdd.preferredLocations(rdd.partitions(partition)).toList
-    if (rddPrefs.nonEmpty) {
-      return rddPrefs.map(TaskLocation(_))
-    }
-
-    // If the RDD has narrow dependencies, pick the first partition of the first narrow dependency
-    // that has any placement preferences. Ideally we would choose based on transfer sizes,
-    // but this will do for now.
-    // TODO-lzp-improve: 改进
-    rdd.dependencies.foreach {
-      case n: NarrowDependency[_] =>
-        for (inPart <- n.getParents(partition)) {
-          val locs = getPreferredLocsInternal(n.rdd, inPart, visited)
-          if (locs != Nil) {
-            return locs
-          }
-        }
-
-      case _ =>
-    }
-
-    Nil
-  }
 
   /** Mark a map stage job as finished with the given output stats, and report to its listener. */
   def markMapStageJobAsFinished(job: ActiveJob, stats: MapOutputStatistics): Unit = {

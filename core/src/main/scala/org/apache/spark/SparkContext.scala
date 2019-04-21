@@ -402,8 +402,9 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
 
     _eventLogDir =
       if (isEventLogEnabled) {
-        val unresolvedDir = conf.get("spark.eventLog.dir", EventLoggingListener.DEFAULT_LOG_DIR)
-          .stripSuffix("/")
+        val unresolvedDir = conf.get(
+          "spark.globalDriver.eventLog.dir", EventLoggingListener.DEFAULT_LOG_DIR
+        ).stripSuffix("/")
         Some(Utils.resolveURI(unresolvedDir))
       } else {
         None
@@ -1067,6 +1068,26 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     hadoopFile[K, V, F](path, defaultMinPartitions)
   }
 
+  // paths: clusterName -> file path
+  def newMCHadoopFile[K, V, F <: NewInputFormat[K, V]](paths: Map[String, String])
+    (implicit km: ClassTag[K], vm: ClassTag[V], fm: ClassTag[F]): RDD[(K, V)] = withScope {
+    newMCHadoopFile(
+      paths,
+      fm.runtimeClass.asInstanceOf[Class[F]],
+      km.runtimeClass.asInstanceOf[Class[K]],
+      vm.runtimeClass.asInstanceOf[Class[V]])
+  }
+
+  def newMCHadoopFile[K, V, F <: NewInputFormat[K, V]](
+    paths: Map[String, String],
+    fClass: Class[F],
+    kClass: Class[K],
+    vClass: Class[V]): RDD[(K, V)] = withScope {
+    assertNotStopped()
+
+    new NewMCHadoopRDD(this, paths, fClass, kClass, vClass).setName(paths.mkString(","))
+  }
+
   /** Get an RDD for a Hadoop file with an arbitrary new API InputFormat. */
   def newAPIHadoopFile[K, V, F <: NewInputFormat[K, V]]
       (path: String)
@@ -1492,16 +1513,6 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     listenerBus.addListener(listener)
   }
 
-  private[spark] def getSiteDriverIds(): Seq[String] = {
-    schedulerBackend match {
-      case b: CoarseGrainedGlobalSchedulerBackend =>
-        b.getSiteDriverIds
-      case _ =>
-        logWarning("Requesting site drivers is only supported in coarse-grained mode")
-        Nil
-    }
-  }
-
   // TODO-lzp: 能否把请求executor, 分解到每个SiteMaster去请求executor?
 
   /**
@@ -1653,7 +1664,9 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
    * @return list of preferred locations for the partition
    */
   private [spark] def getPreferredLocs(rdd: RDD[_], partition: Int): Seq[TaskLocation] = {
-    dagScheduler.getPreferredLocs(rdd, partition)
+//    dagScheduler.getPreferredLocs(rdd, partition)
+    // TODO-lzp: 这里抑制了错误
+    Nil
   }
 
   /**
@@ -1662,6 +1675,8 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   private[spark] def persistRDD(rdd: RDD[_]) {
     persistentRdds(rdd.id) = rdd
   }
+
+  def clusterNameToHostName: Map[String, String] = schedulerBackend.clusterNameToHostName
 
   /**
    * Unpersist an RDD from memory and/or disk storage

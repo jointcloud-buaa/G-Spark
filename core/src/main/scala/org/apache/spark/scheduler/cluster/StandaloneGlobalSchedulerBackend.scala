@@ -75,7 +75,9 @@ private[spark] class StandaloneGlobalSchedulerBackend(
       "--hostname", "{{HOSTNAME}}",
       "--cores", "{{CORES}}",
       "--app-id", "{{APP_ID}}",
-      "--site-master-url", "{{SITE_MASTER_URL}}")
+      "--site-master-url", "{{SITE_MASTER_URL}}",
+      "--cluster-name", "{{CLUSTER_NAME}}"
+    )
     val extraJavaOpts = sc.conf.getOption("spark.siteDriver.extraJavaOptions")
       .map(Utils.splitCommandString).getOrElse(Seq.empty)
     val classPathEntries = sc.conf.getOption("spark.siteDriver.extraClassPath")

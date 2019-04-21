@@ -44,6 +44,7 @@ private[deploy] class SiteDriverRunner(
   val publicAddress: String,
   val sparkHome: File,
   val siteDriverDir: File,
+  val clusterName: String,
   val siteMasterUrl: String,
   conf: SparkConf,
   appLocalDirs: Seq[String],
@@ -113,6 +114,7 @@ private[deploy] class SiteDriverRunner(
 
   private[sitemaster] def substituteVariables(argument: String): String = argument match {
     case "{{SITE_MASTER_URL}}" => siteMasterUrl
+    case "{{CLUSTER_NAME}}" => clusterName
     case "{{SITE_DRIVER_ID}}" => sdId
     case "{{HOSTNAME}}" => host
     case "{{CORES}}" => cores.toString

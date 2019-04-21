@@ -71,6 +71,7 @@ private[deploy] class GlobalMaster(
   val apps = new HashSet[ApplicationInfo]
 
   private val idToSiteMaster = new HashMap[String, SiteMasterInfo]
+  private val idToClusterName = new HashMap[String, String]
   private val addressToSiteMaster = new HashMap[RpcAddress, SiteMasterInfo]
 
   private val endpointToApp = new HashMap[RpcEndpointRef, ApplicationInfo]
@@ -396,7 +397,7 @@ private[deploy] class GlobalMaster(
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     // SiteMaster -> Global Master
     case RegisterSiteMaster(
-      id, smHost, smPort, smRef, cores, memory, smWebUiUrl) =>
+      id, smHost, smPort, clusterName, smRef, cores, memory, smWebUiUrl) =>
       logInfo("Registering site master %s:%d with %d cores, %s RAM".format(
         smHost, smPort, cores, Utils.megabytesToString(memory)))
       if (state == GlobalMasterState.STANDBY) {
@@ -404,8 +405,8 @@ private[deploy] class GlobalMaster(
       } else if (idToSiteMaster.contains(id)) {
         context.reply(RegisterSiteMasterFailed("Duplicate worker ID"))
       } else {
-        val smaster = new SiteMasterInfo(id, smHost, smPort, cores, memory,
-                                         smRef, smWebUiUrl)
+        val smaster = new SiteMasterInfo(
+          id, smHost, smPort, clusterName, cores, memory, smRef, smWebUiUrl)
         if (registerSiteMaster(smaster)) {
           persistenceEngine.addSiteMaster(smaster)
           context.reply(RegisteredSiteMaster(self, globalMasterWebUiUrl))
@@ -670,6 +671,7 @@ private[deploy] class GlobalMaster(
 
     siteMasters += master
     idToSiteMaster(master.id) = master
+    idToClusterName(master.id) = master.clusterName
     addressToSiteMaster(masterAddress) = master
     if (reverseProxy) {
       webUi.addProxyTargets(master.id, master.webUiAddress)
@@ -681,6 +683,7 @@ private[deploy] class GlobalMaster(
     logInfo("Removing site master " + master.id + " on " + master.host + ":" + master.port)
     master.setState(SiteMasterOutState.DEAD)
     idToSiteMaster -= master.id
+    idToClusterName -= master.id
     addressToSiteMaster -= master.endpoint.address
     if (reverseProxy) {
       webUi.removeProxyTargets(master.id)

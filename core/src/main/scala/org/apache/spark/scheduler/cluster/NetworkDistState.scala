@@ -14,15 +14,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.spark.scheduler.cluster
 
-import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef}
+case class NetworkDistState(
+  idxMap: Map[String, Int],  // TODO-lzp: 不确定是clusterName还是hostname, 尽量hostname
+  bws: Array[Array[Long]],  // kb
+  latencies: Array[Array[Long]]  // ms
+)
 
-private[cluster] class SiteDriverData(
-  val endpoint: RpcEndpointRef,
-  val address: RpcAddress,
-  val clusterName: String,
-  override val sdriverHost: String,
-  override val logUrlMap: Map[String, String]
-) extends SiteDriverInfo(sdriverHost, logUrlMap)
+object NetworkDistState {
+  def empty(idxMap: Map[String, Int]): NetworkDistState = {
+    val len = idxMap.size
+    NetworkDistState(idxMap, Array.ofDim[Long](len, len), Array.ofDim[Long](len, len))
+  }
+
+  def const(idxMap: Map[String, Int], bw: Long, latency: Long): NetworkDistState = {
+    val len = idxMap.size
+    val ary = Array.fill[Long](len, len)(bw)
+    NetworkDistState(
+      idxMap,
+      Array.fill(len, len)(bw),
+      Array.fill(len, len)(latency))
+  }
+}

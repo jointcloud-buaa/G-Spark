@@ -36,6 +36,8 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
   scheduler: DAGScheduler, val rpcEnv: RpcEnv
 ) extends GlobalSchedulerBackend with Logging {
 
+  // Use an atomic variable to track total number of cores in the cluster for simplicity and speed
+  protected val totalCoreCount = new AtomicInteger(0)
   // Total number of site drivers that are currently registered
   protected val totalRegisteredSiteDrivers = new AtomicInteger(0)
   protected val conf = scheduler.sc.conf
@@ -53,6 +55,8 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
   // only be modified in `DriverEndpoint.receive/receiveAndReply` with protection by
   // `CoarseGrainedSchedulerBackend.this`.
   private val siteDriverDataMap = new mutable.HashMap[String, SiteDriverData]
+
+  private val clusterNameToSDriverId = new mutable.HashMap[String, String]()
   // siteDriverId -> ready?
   // TODO-lzp: 不确定用id来标识siteDriver会不会有问题, id会不会变, 重启siteDriver会发生什么
   // sitedriverId -> sitemasterurl
@@ -127,7 +131,7 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
 
-      case RegisterSiteDriver(sdId, sdRef, hostname, cores, logUrls) =>
+      case RegisterSiteDriver(sdId, sdRef, clusterName, hostname, cores, logUrls) =>
         if (siteDriverDataMap.contains(sdId)) {
           sdRef.send(RegisterSiteDriverFailed(s"Duplicate siteDriver ID: $sdId"))
           context.reply(true)
@@ -136,11 +140,12 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
           logInfo(s"Registered site driver $sdRef ($sdriverAddress) with ID $sdId")
           addressToSiteDriverId(sdriverAddress) = sdId
           totalRegisteredSiteDrivers.addAndGet(1)
-          val data = new SiteDriverData(sdRef, sdriverAddress, hostname, logUrls)
+          val data = new SiteDriverData(sdRef, sdriverAddress, clusterName, hostname, logUrls)
           val sdIdPat = """site-driver-(\d+)""".r
           val sdIdPat(sdNum) = sdId
           CoarseGrainedGlobalSchedulerBackend.this.synchronized {
             siteDriverDataMap.put(sdId, data)
+            clusterNameToSDriverId.put(clusterName, sdId)
             if (currentSiteDriverIdCounter < sdNum.toInt) {
               currentSiteDriverIdCounter = sdNum.toInt
             }
@@ -201,6 +206,7 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
           val killed = CoarseGrainedGlobalSchedulerBackend.this.synchronized {
             addressToSiteDriverId -= sdriverInfo.address
             siteDriverDataMap -= sdriverId
+            clusterNameToSDriverId -= sdriverInfo.clusterName
             siteDriverReady -= sdriverId
             siteDriversPendingLossReason -= sdriverId
             siteDriversPendingToRemove.remove(sdriverId).getOrElse(false)
@@ -264,6 +270,9 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
     driverEndpoint.send(LaunchStages(stages))
   }
 
+  override def defaultParallelism(): Int = {
+    conf.getInt("spark.default.parallelism", math.max(totalCoreCount.get(), 2))
+  }
 
   protected def createDriverEndpointRef(
     properties: ArrayBuffer[(String, String)]): RpcEndpointRef = {
@@ -341,7 +350,15 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
     } else false
   }
 
-  def getSiteDriverIds: Seq[String] = siteDriverDataMap.keySet.toSeq
+  def hostnameToSDriverId: Map[String, String] = siteDriverDataMap.map{
+    case (sdriverId, data) =>
+      (data.sdriverHost, sdriverId)
+    }.toMap
+
+  override def clusterNameToHostName: Map[String, String] = clusterNameToSDriverId.map {
+    case (clusterName, sdriverId) =>
+      (clusterName, siteDriverDataMap(sdriverId).sdriverHost)
+    }.toMap
 
 //  final def killSiteDrivers(sdriverIds: Seq[String]): Seq[String] =
 //    killSiteDrivers(sdriverIds, replace=false, force=false)

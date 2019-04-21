@@ -23,6 +23,7 @@ import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Map}
+import scala.collection.mutable
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
@@ -331,6 +332,34 @@ private[spark] class MapOutputTrackerGlobalMaster(val conf: SparkConf) extends M
   }
 
   def getMapOutputStatuses(shuffleId: Int): Array[MapStatus] = mapStatuses(shuffleId)
+
+  def getDataDist(dep: ShuffleDependency[_, _, _], reduceId: Int): Predef.Map[String, Long] = {
+    val statuses = mapStatuses.get(dep.shuffleId).orNull
+    if (statuses != null) {
+      statuses.synchronized {
+        if (statuses.nonEmpty) {
+          val locs = new mutable.HashMap[BlockManagerId, Long]()
+          var mapIdx = 0
+          while (mapIdx < statuses.length) {
+            val status = statuses(mapIdx)
+            if (status != null) {
+              val blockSize = status.getSizeForBlock(reduceId)
+              if (blockSize >0) {
+                locs(status.location) = locs.getOrElse(status.location, 0L) + blockSize
+              }
+            }
+          }
+          // 此处的host最早来自createSiteDriverEnv中的host, 来自SiteContext中的hostname,
+          // 来自SiteDriverWrapper中的host, 来自SiteMaster在SiteDriverRunner中的hostname
+          // 来自于SiteMaster中的host. 此host在RegisterSiteDriver中传入GlobalDriverEndpoint,
+          // 存储在siteDriverDataMap中, 既而成为DAGScheduler中的, hostnameToSiteDriverId
+          // 换句话说, 此host是系统唯一的
+          return locs.map{ case (bk, sz) => (bk.host, sz)}.toMap
+        }
+      }
+    }
+    Predef.Map.empty
+  }
 
   override def stop(): Unit = {}
 }

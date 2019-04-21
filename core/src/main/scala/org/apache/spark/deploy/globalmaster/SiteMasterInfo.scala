@@ -26,6 +26,7 @@ private[spark] class SiteMasterInfo(
   val id: String,
   val host: String,
   val port: Int,
+  val clusterName: String,
   val cores: Int,
   val memory: Int,
   val endpoint: RpcEndpointRef,

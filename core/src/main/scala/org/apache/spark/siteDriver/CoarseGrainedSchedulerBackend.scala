@@ -125,7 +125,7 @@ class CoarseGrainedSchedulerBackend(
       rpcEnv.asyncSetupEndpointRefByURI(gdriverUrl).flatMap { ref =>
         gdriverEndpoint = Some(ref)
         ref.ask[Boolean](RegisterSiteDriver(
-          siteDriverId, self, hostname, cores, extractLogUrls))
+          siteDriverId, self, scheduler.ssc.clusterName, hostname, cores, extractLogUrls))
       }(ThreadUtils.sameThread).onComplete {
         case Success(msg) =>
         case Failure(e) =>

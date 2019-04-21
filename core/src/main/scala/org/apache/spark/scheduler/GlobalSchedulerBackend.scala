@@ -35,5 +35,9 @@ private[spark] trait GlobalSchedulerBackend {
 
   def launchStages(stages: Seq[StageDescription]): Unit
 
-  def getSiteDriverIds: Seq[String]
+  def clusterNameToHostName: Map[String, String]
+
+  def hostnameToSDriverId: Map[String, String]
+
+  def defaultParallelism(): Int
 }

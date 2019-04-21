@@ -44,6 +44,7 @@ import org.apache.spark.serializer.{JavaSerializer, Serializer}
 import org.apache.spark.util.{ThreadUtils, Utils}
 
 private[deploy] class SiteMaster(
+  val clusterName: String,
   override val rpcEnv: RpcEnv,
   webUiPort: Int,
   cores: Int,
@@ -361,6 +362,7 @@ private[deploy] class SiteMaster(
             publicAddress,
             sparkHome,
             siteDriverDir,
+            clusterName,
             siteMasterUrlWithEndpoint,
             conf,
             appLocalDirs,
@@ -937,7 +939,7 @@ private[deploy] class SiteMaster(
 
   private def registerWithGlobalMaster(gmEndpoint: RpcEndpointRef): Unit = {
     gmEndpoint.ask[RegisterSiteMasterResponse](RegisterSiteMaster(
-      siteMasterId, host, port, self, cores, memory, siteMasterWebUiUrl
+      siteMasterId, host, port, clusterName, self, cores, memory, siteMasterWebUiUrl
     )).onComplete {
       case Success(msg) =>
         Utils.tryLogNonFatalError { handleRegisterResponse(msg) }
@@ -1213,7 +1215,7 @@ private[deploy] object SiteMaster extends Logging{
     val conf = new SparkConf
     val args = new SiteMasterArguments(argString, conf)
 
-    val (rpcEnv, _) = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort,
+    val (rpcEnv, _) = startRpcEnvAndEndpoint(args.host, args.port, args.clusterName, args.webUiPort,
       args.cores, args.memory, args.gmasters, args.workDir, conf)
     rpcEnv.awaitTermination()
   }
@@ -1221,6 +1223,7 @@ private[deploy] object SiteMaster extends Logging{
   def startRpcEnvAndEndpoint(
     host: String,
     port: Int,
+    clusterName: String,
     webUiPort: Int,
     cores: Int,
     memory: Int,
@@ -1230,7 +1233,7 @@ private[deploy] object SiteMaster extends Logging{
     val securityMgr = new SecurityManager(conf)
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
     val gmAddresses = gmUrls.map(RpcAddress.fromSparkURL)
-    val smEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME, new SiteMaster(rpcEnv,
+    val smEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME, new SiteMaster(clusterName, rpcEnv,
       webUiPort, cores, memory, gmAddresses, ENDPOINT_NAME, workDir, conf, securityMgr))
     val portResponse = smEndpoint.askWithRetry[BoundPortsResponse](BoundPortsRequest)
     (rpcEnv, portResponse.webUIPort)

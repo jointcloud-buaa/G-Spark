@@ -135,6 +135,8 @@ abstract class RDD[T: ClassTag](
    */
   protected def getPreferredLocations(split: Partition): Seq[String] = Nil
 
+  protected def getDataDist(part: Int): Map[String, Long] = Map.empty
+
   /** Optionally overridden by subclasses to specify how they are partitioned. */
   @transient val partitioner: Option[Partitioner] = None
 
@@ -274,6 +276,9 @@ abstract class RDD[T: ClassTag](
       getPreferredLocations(split)
     }
   }
+
+  // TODO-lzp: 加入checkpointRDD的操作
+  final def dataDist(part: Int): Map[String, Long] = getDataDist(part)
 
   /**
    * Internal method to this RDD; will read from cache if applicable, or otherwise compute it.

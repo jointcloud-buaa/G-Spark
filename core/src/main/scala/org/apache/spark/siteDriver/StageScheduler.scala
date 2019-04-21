@@ -877,7 +877,6 @@ class StageScheduler(
    * methods (getCacheLocs()); please be careful when modifying this method, because any new
    * StageScheduler state accessed by it may require additional synchronization.
    */
-  // TODO-lzp: 这里依赖了Stage中RDD的依赖关系, 不确定在序列化后能否传送过来?
   // TODO-lzp: 另外需要注意的是, 这里的位置偏好, 是有缺失的, 只有当前集群的偏好
   private def getPreferredLocsInternal(
     rdd: RDD[_],

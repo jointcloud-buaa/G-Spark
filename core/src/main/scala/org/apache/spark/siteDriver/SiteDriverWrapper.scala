@@ -37,6 +37,7 @@ object SiteDriverWrapper extends Logging {
     cores: Int,
     appId: String,
     siteMasterUrl: String,
+    clusterName: String,
     userClassPath: Seq[URL]
   ): Unit = {
 
@@ -59,7 +60,8 @@ object SiteDriverWrapper extends Logging {
         ("spark.siteDriver.cores", cores.toString),
         ("spark.siteDriver.host", hostname),
         ("spark.siteDriver.gdriverUrl", gdriverUrl),
-        ("spark.siteMaster.url", siteMasterUrl)
+        ("spark.siteMaster.url", siteMasterUrl),
+        ("spark.siteMaster.name", clusterName)
       )
       // Create SparkEnv using properties we fetched from the driver.
       val gdriverConf = new SparkConf()
@@ -99,6 +101,7 @@ object SiteDriverWrapper extends Logging {
     var cores: Int = 0
     var appId: String = null
     var siteMasterUrl: String = null
+    var clusterName: String = null
     val userClassPath = new ListBuffer[URL]()
 
     var argv = args.toList
@@ -119,6 +122,9 @@ object SiteDriverWrapper extends Logging {
         case "--app-id" :: value :: tail =>
           appId = value
           argv = tail
+        case "--cluster-name" :: value :: tail =>
+          clusterName = value
+          argv = tail
         case "--site-master-url" :: value :: tail =>
           siteMasterUrl = value
           argv = tail
@@ -137,7 +143,7 @@ object SiteDriverWrapper extends Logging {
       printUsageAndExit()
     }
 
-    run(gdriverUrl, siteDriverId, hostname, cores, appId, siteMasterUrl, userClassPath)
+    run(gdriverUrl, siteDriverId, hostname, cores, appId, siteMasterUrl, clusterName, userClassPath)
     System.exit(0)
   }
 

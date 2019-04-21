@@ -16,6 +16,7 @@
  */
 package org.apache.spark.siteDriver
 
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
@@ -24,12 +25,16 @@ import scala.collection.mutable.{HashMap, HashSet}
 import scala.reflect.{classTag, ClassTag}
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.conf.Configuration
+
 import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv}
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
-import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef}
-import org.apache.spark.scheduler.LiveListenerBus
+import org.apache.spark.rpc.{RpcAddress, RpcEndpointAddress, RpcEndpointRef}
+import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus}
 import org.apache.spark.util.Utils
 
 private[spark] class SiteContext(
@@ -38,6 +43,10 @@ private[spark] class SiteContext(
 
   private var _conf: SparkConf = _
   private var _env: SparkEnv = _
+  private var _eventLogDir: Option[URI] = None
+  private var _eventLogCodec: Option[String] = None
+  private var _eventLogger: Option[EventLoggingListener] = None
+  private var _hadoopConfiguration: Configuration = _
   private var _taskScheduler: TaskScheduler = _
   private var _schedulerBackend: SiteSchedulerBackend = _
   @volatile private var _stageScheduler: StageScheduler = _
@@ -54,6 +63,7 @@ private[spark] class SiteContext(
   private var _hostname: String = _
   private var _gdriverUrl: String = _
   private var _siteMasterUrl: String = _
+  private var _siteMasterName: String = _
 
   private var _executorMemory: Int = _
 
@@ -87,15 +97,31 @@ private[spark] class SiteContext(
     _stageScheduler = ds
   }
 
+  /**
+   * A default Hadoop Configuration for the Hadoop code (e.g. file systems) that we reuse.
+   *
+   * @note As it will be reused in all Hadoop RDDs, it's better not to modify it unless you
+   * plan to set some global configurations for all Hadoop RDDs.
+   */
+  def hadoopConfiguration: Configuration = _hadoopConfiguration
+
   private[spark] def executorMemory: Int = _executorMemory
 
   def siteAppId: String = _siteAppId
   def siteAppAttemptId: Option[String] = _siteAppAttemptId
   def siteMasterUrl: String = _siteMasterUrl
+  def clusterName: String = _siteMasterName
+  def siteMasterHost: String = RpcEndpointAddress(_siteMasterUrl).rpcAddress.host
   def siteDriverId: String = _siteDriverId
   def globalDriverUrl: String = _gdriverUrl
   def hostname: String = _hostname
   def cores: Int = _siteDriverCores
+
+  private[spark] def isEventLogEnabled: Boolean = _conf.getBoolean("spark.eventLog.enabled", false)
+  // TODO-lzp: 以下用在SiteAppDescription的构造上
+  private[spark] def eventLogDir: Option[URI] = _eventLogDir
+  private[spark] def eventLogCodec: Option[String] = _eventLogCodec
+  private[spark] def eventLogger: Option[EventLoggingListener] = _eventLogger
 
   private def warnSparkMem(value: String): String = {
     logWarning("Using SPARK_MEM to set amount of memory to use per executor process is " +
@@ -117,10 +143,33 @@ private[spark] class SiteContext(
     _hostname = _conf.get("spark.siteDriver.host")
     _gdriverUrl = _conf.get("spark.siteDriver.gdriverUrl")
     _siteMasterUrl = _conf.get("spark.siteMaster.url")
+    _siteMasterName = _conf.get("spark.siteMaster.name")
 
     if (_conf.getBoolean("spark.logConf", false)) {
       logInfo("Spark configuration:\n" + _conf.toDebugString)
     }
+
+    // 其实可以不用是hdfs路径的
+    _eventLogDir =
+      if (isEventLogEnabled) {
+        val unresolvedDir = conf.get(
+          "spark.siteDriver.eventLog.dir", EventLoggingListener.DEFAULT_LOG_DIR
+        ).stripSuffix("/")
+        Some(Utils.resolveURI(unresolvedDir))
+      } else {
+        None
+      }
+
+    _eventLogCodec = {
+      val compress = _conf.getBoolean("spark.eventLog.compress", false)
+      if (compress && isEventLogEnabled) {
+        Some(CompressionCodec.getCodecName(_conf)).map(CompressionCodec.getShortName)
+      } else {
+        None
+      }
+    }
+
+    _hadoopConfiguration = SparkHadoopUtil.get.newConfiguration(_conf)
 
     _executorMemory = _conf.getOption("spark.executor.memory")
       .orElse(Option(System.getenv("SPARK_EXECUTOR_MEMORY")))
@@ -165,6 +214,19 @@ private[spark] class SiteContext(
     _siteAppAttemptId = taskScheduler.siteAppAttemptId()
 
     _conf.set("spark.siteApp.id", _siteAppId)
+
+
+    _eventLogger =
+      if (isEventLogEnabled) {
+        val logger =
+          new EventLoggingListener(_siteAppId, _siteAppAttemptId, _eventLogDir.get,
+            _conf, _hadoopConfiguration)
+        logger.start()
+        listenerBus.addListener(logger)
+        Some(logger)
+      } else {
+        None
+      }
 
     // TODO-lzp: 涉及到BlockManager的修改
     env.blockManager.initialize(_siteAppId)
@@ -272,7 +334,9 @@ private[spark] class SiteContext(
     Utils.tryLogNonFatalError {
       _cleaner.foreach(_.stop())
     }
-
+    Utils.tryLogNonFatalError {
+      _eventLogger.foreach(_.stop())
+    }
     if (_stageScheduler != null) {
       Utils.tryLogNonFatalError {
         _stageScheduler.stop()

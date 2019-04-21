@@ -41,6 +41,7 @@ private[deploy] object DeployMessages {
       id: String,
       host: String,
       port: Int,
+    clusterName: String,
       master: RpcEndpointRef,
       cores: Int,
       memory: Int,
