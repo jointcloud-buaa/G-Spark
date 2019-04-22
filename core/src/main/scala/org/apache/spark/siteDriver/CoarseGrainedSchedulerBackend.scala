@@ -179,6 +179,11 @@ class CoarseGrainedSchedulerBackend(
       case ReviveOffers =>
         makeOffers()
 
+      case StopSiteDriver =>
+        logInfo("GlobalDriver commanded a shutdown")
+        scheduler.ssc.stop()
+        stop()
+
       case KillTask(taskId, executorId, interruptThread) =>
         executorDataMap.get(executorId) match {
           case Some(executorInfo) =>
@@ -234,10 +239,6 @@ class CoarseGrainedSchedulerBackend(
 
           makeOffers()
         }
-
-      case StopSiteDriver =>
-        context.reply(true)
-        stop()
 
       case StopExecutors =>
         logInfo("Asking each executor to shut down")

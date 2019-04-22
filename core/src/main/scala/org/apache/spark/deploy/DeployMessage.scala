@@ -278,9 +278,11 @@ private[deploy] object DeployMessages {
 
   case object StopSiteAppClient
 
-  case object GetSiteMastersAddress
+  case class GetSiteDriverIdsForApp(appId: String)
 
-  case class SiteMastersAddressResponse(urls: Array[String])
+  case class SiteDriverIdsForAppResponse(appId: String, sdriverIds: Array[String])
+
+  case object GetSiteDriverIds
 
   // Master to Worker & AppClient
 

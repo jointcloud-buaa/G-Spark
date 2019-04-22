@@ -54,13 +54,16 @@ private[spark] class NewMCHadoopPartition(
   override def equals(other: Any): Boolean = super.equals(other)
 }
 
+// TODO-lzp: 在之前的方式中, 会报SparkContext不能序列化的错误. 探究下为什么
+
 @DeveloperApi
 class NewMCHadoopRDD[K, V](
   sc : SparkContext,
   paths: Map[String, String],
   inputFormatClass: Class[_ <: InputFormat[K, V]],
   keyClass: Class[K],
-  valueClass: Class[V])
+  valueClass: Class[V],
+  @transient private val _conf: Configuration)
   extends RDD[(K, V)](sc, Nil) with Logging {
 
   private val jobTrackerId: String = {
@@ -75,6 +78,8 @@ class NewMCHadoopRDD[K, V](
   private val shouldCloneJobConf = sparkContext.conf.getBoolean("spark.hadoop.cloneConf", false)
 
   private val ignoreCorruptFiles = sparkContext.conf.get(IGNORE_CORRUPT_FILES)
+
+  private val clusterToHost = sc.clusterNameToHostName
 
   def getConf: Configuration = {
     val conf: Configuration = new Configuration()
@@ -102,25 +107,23 @@ class NewMCHadoopRDD[K, V](
   }
 
   override def getPartitions: Array[Partition] = {
-    val clusterToHost = sc.clusterNameToHostName
     var startIdx = 0
     paths.flatMap { case (clusterName, path) =>
       val host = clusterToHost(clusterName)
-      val webPath = s"webhdfs://$host:14000/path"
-      val hdfsPath = s"hdfs://$host/path"
-      val conf = sc.hadoopConfiguration
-      FileSystem.getLocal(conf)
-      val job = Job.getInstance(conf)
+      val webPath = s"webhdfs://$host:14000/$path"
+      val hdfsPath = s"hdfs://$host/$path"
+      FileSystem.getLocal(_conf)
+      val job = Job.getInstance(_conf)
       FileInputFormat.setInputPaths(job, webPath)
-      val _conf = job.getConfiguration
+      val conf = job.getConfiguration
 
       val inputFormat = inputFormatClass.newInstance
       inputFormat match {
         case configurable: Configurable =>
-          configurable.setConf(_conf)
+          configurable.setConf(conf)
         case _ =>
       }
-      val jobContext = new JobContextImpl(_conf, jobId)
+      val jobContext = new JobContextImpl(conf, jobId)
       // 新式的FileInputFormat并不指定分片的个数, 具体的分片的个数取决于每个分片的大小.
       // 在minSize/blockSize/maxSize中取中间的大小.
       val rawSplits = inputFormat.getSplits(jobContext).toArray

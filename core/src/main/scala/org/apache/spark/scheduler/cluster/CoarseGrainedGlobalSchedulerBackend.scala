@@ -57,10 +57,9 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
   private val siteDriverDataMap = new mutable.HashMap[String, SiteDriverData]
 
   private val clusterNameToSDriverId = new mutable.HashMap[String, String]()
-  // siteDriverId -> ready?
+
   // TODO-lzp: 不确定用id来标识siteDriver会不会有问题, id会不会变, 重启siteDriver会发生什么
-  // sitedriverId -> sitemasterurl
-  protected val siteDriverReady = new mutable.HashMap[String, String]
+  protected val siteDriverReady = new mutable.HashSet[String]  // sitedriverId
 
   // Number of executors requested by the cluster manager, [[ExecutorAllocationManager]]
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
@@ -98,7 +97,7 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
       case ClusterReady(sdriverId, sdriverRef, siteMasterUrl) =>
         if (siteDriverDataMap.contains(sdriverId)) {
           logInfo(s"cluster $sdriverId($sdriverRef) is Ready to receive tasks")
-          siteDriverReady(sdriverId) = siteMasterUrl
+          siteDriverReady += sdriverId
         } else {
           logInfo(s"Unknown cluster $sdriverId($sdriverRef) is report ready")
         }

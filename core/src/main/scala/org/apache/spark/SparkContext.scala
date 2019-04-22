@@ -1085,7 +1085,8 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     vClass: Class[V]): RDD[(K, V)] = withScope {
     assertNotStopped()
 
-    new NewMCHadoopRDD(this, paths, fClass, kClass, vClass).setName(paths.mkString(","))
+    new NewMCHadoopRDD(this, paths, fClass, kClass, vClass, hadoopConfiguration)
+      .setName(paths.mkString(","))
   }
 
   /** Get an RDD for a Hadoop file with an arbitrary new API InputFormat. */

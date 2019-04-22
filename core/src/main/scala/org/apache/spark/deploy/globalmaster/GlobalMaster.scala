@@ -510,12 +510,14 @@ private[deploy] class GlobalMaster(
 //      val formattedExecutorIds = formatExecutorIds(executorIds)
 //      context.reply(handleKillExecutors(appId, formattedExecutorIds))
 
-    case GetSiteMastersAddress =>
-      context.reply(SiteMastersAddressResponse(
-        addressToSiteMaster.keys.map(addr =>
-          RpcEndpointAddress.apply(addr, SiteMaster.ENDPOINT_NAME).toString
-        ).toArray[String]
-      ))
+    case GetSiteDriverIdsForApp(appId: String) =>
+      val sdriverIds = idToApp.get(appId) match {
+        case Some(app) =>
+          app.siteDrivers.keys.toArray
+        case None =>
+          Array.empty[String]
+      }
+      context.reply(SiteDriverIdsForAppResponse(appId, sdriverIds))
   }
 
   override def onDisconnected(address: RpcAddress): Unit = {
@@ -778,8 +780,7 @@ private[deploy] class GlobalMaster(
 
       // Tell all workers that the application has finished, so they can clean up any app state.
       siteMasters.foreach { sm =>
-        // TODO-lzp
-        sm.endpoint.send(ApplicationRemoved(app.id))
+        sm.endpoint.send(ApplicationFinished(app.id))
       }
     }
   }

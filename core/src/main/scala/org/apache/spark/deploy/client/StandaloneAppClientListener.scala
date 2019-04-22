@@ -38,7 +38,4 @@ private[spark] trait StandaloneAppClientListener {
 
   def siteDriverRemoved(
     fullId: String, message: String, exitStatus: Option[Int], siteMasterLost: Boolean): Unit
-
-  // TODO-lzp: 原则上觉得有点多余, 但是它是AppClient唯一能跟SchedulerBackend通信的渠道
-  def setSiteMastersAddress(addrs: Array[String]): Unit
 }

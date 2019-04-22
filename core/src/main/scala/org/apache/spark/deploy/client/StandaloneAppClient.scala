@@ -22,6 +22,7 @@ import java.util.concurrent.{Future => JFuture, ScheduledFuture => JScheduledFut
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
 import scala.concurrent.Future
+import scala.reflect.ClassTag
 import scala.util.{Failure, Success}
 import scala.util.control.NonFatal
 
@@ -187,17 +188,21 @@ private[spark] class StandaloneAppClient(
         master = Some(gmRef)
         alreadyDisconnected = false
         gmRef.send(GlobalMasterChangeAcknowledged(appId.get))
-
-        // 获取 site master的地址是为了确保所有的site master都启动成功site driver后
-        // 应用才会开始任务分发. 即TaskSchedulerImpl#postStartHook()
-      case GetSiteMastersAddress =>
-        sendToMaster(GetSiteMastersAddress)
-
-      case SiteMastersAddressResponse(addrs) =>
-        listener.setSiteMastersAddress(addrs)
     }
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+      case GetSiteDriverIds =>
+        val rsp = askMaster[SiteDriverIdsForAppResponse](GetSiteDriverIdsForApp(appId.get))
+        val ids = rsp match {
+          case Some(SiteDriverIdsForAppResponse(_appId, _ids)) =>
+            if (appId.get != _appId) {
+              Array.empty[String]
+            } else _ids
+          case None =>
+            Array.empty[String]
+        }
+        context.reply(ids)
+
       case StopAppClient =>
         markDead("Application has been stopped.")
         sendToMaster(UnregisterApplication(appId.get))
@@ -219,6 +224,15 @@ private[spark] class StandaloneAppClient(
             logWarning("Attempted to kill executors before registering with Master.")
             context.reply(false)
         }
+    }
+
+    private def askMaster[T: ClassTag](msg: Any): Option[T] = {
+      master match {
+        case Some(mref) =>
+          Some(mref.askWithRetry[T](msg))
+        case None =>
+          None
+      }
     }
 
     private def askAndReplyAsync[T](
@@ -321,12 +335,12 @@ private[spark] class StandaloneAppClient(
     }
   }
 
-  def getAllSiteMastersUrl(): Unit = {
+  def getSiteDriverIds(): Array[String] = {
     if (endpoint.get != null && appId.get != null) {
-      endpoint.get.send(GetSiteMastersAddress)
+      endpoint.get.askWithRetry[Array[String]](GetSiteDriverIds)
     } else {
       logWarning("Attempted to request sitemasters urls before driver fully initialized")
+      Array.empty[String]
     }
   }
-
 }

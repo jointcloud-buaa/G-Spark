@@ -46,9 +46,6 @@ private[spark] class StandaloneGlobalSchedulerBackend(
     override protected def onStopRequest(): Unit = stop(SparkAppHandle.State.KILLED)
   }
 
-  // TODO-lzp: 什么时候减
-  private val siteMastersUrl = HashSet.empty[String]
-
   @volatile var shutdownCallback: StandaloneGlobalSchedulerBackend => Unit = _
   @volatile private var appId: String = _
 
@@ -199,12 +196,8 @@ private[spark] class StandaloneGlobalSchedulerBackend(
 
   // 确保siteDriverReady的值, 包含所有SiteMasterUrl
   override def sufficientResourcesRegistered(): Boolean = {
-    if (siteMastersUrl.isEmpty) return false
-    (siteMastersUrl -- siteDriverReady.values.toSet).isEmpty
-  }
-
-  override def setSiteMastersAddress(urls: Array[String]): Unit = {
-    for (url <- urls) siteMastersUrl += url
+    val sdriverIds = client.getSiteDriverIds()
+    (sdriverIds.toSet -- siteDriverReady).isEmpty
   }
 
   override def applicationId(): String = Option(appId).getOrElse {
