@@ -20,6 +20,7 @@ package org.apache.spark.siteDriver
 import java.util.concurrent.{ScheduledFuture, TimeUnit}
 
 import scala.collection.mutable
+import scala.concurrent.Future
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
@@ -62,9 +63,11 @@ private[spark] case class ExecutorHeartbeatResponse(reregisterBlockManager: Bool
 private[spark] class ExecutorHeartbeatReceiver(
   ssc: SiteContext,
   clock: Clock)
-  extends ThreadSafeRpcEndpoint with Logging {
+  extends SparkListener with ThreadSafeRpcEndpoint with Logging {
 
   def this(ssc: SiteContext) = this(ssc, new SystemClock)
+
+  ssc.addSparkListener(this)
 
   override val rpcEnv: RpcEnv = ssc.env.rpcEnv
 
@@ -110,6 +113,15 @@ private[spark] class ExecutorHeartbeatReceiver(
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
 
+    // Messages sent and received locally, 主要用于测试
+    case ExecutorRegistered(executorId) =>
+      executorLastSeen(executorId) = clock.getTimeMillis()
+      context.reply(true)
+
+    case ExecutorRemoved(executorId) =>
+      executorLastSeen.remove(executorId)
+      context.reply(true)
+
     case SiteTaskSchedulerIsSet =>
       scheduler = ssc.taskScheduler
       context.reply(true)
@@ -146,6 +158,31 @@ private[spark] class ExecutorHeartbeatReceiver(
         logWarning(s"Dropping $heartbeat because TaskScheduler is not ready yet")
         context.reply(ExecutorHeartbeatResponse(reregisterBlockManager = true))
       }
+  }
+
+  /**
+   * Send ExecutorRegistered to the event loop to add a new executor. Only for test.
+   *
+   * @return if HeartbeatReceiver is stopped, return None. Otherwise, return a Some(Future) that
+   *         indicate if this operation is successful.
+   */
+  def addExecutor(executorId: String): Option[Future[Boolean]] = {
+    Option(self).map(_.ask[Boolean](ExecutorRegistered(executorId)))
+  }
+
+  /**
+   * If the heartbeat receiver is not stopped, notify it of executor registrations.
+   */
+  override def onExecutorAdded(executorAdded: SparkListenerExecutorAdded): Unit = {
+    addExecutor(executorAdded.executorId)
+  }
+
+  def removeExecutor(executorId: String): Option[Future[Boolean]] = {
+    Option(self).map(_.ask[Boolean](ExecutorRemoved(executorId)))
+  }
+
+  override def onExecutorRemoved(executorRemoved: SparkListenerExecutorRemoved): Unit = {
+    removeExecutor(executorRemoved.executorId)
   }
 
   private def expireDeadHosts(): Unit = {

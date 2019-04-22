@@ -16,6 +16,7 @@
  */
 package org.apache.spark.siteDriver
 
+import java.lang.reflect.Constructor
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
@@ -27,14 +28,15 @@ import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv}
+import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv, SparkException}
+import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc.{RpcAddress, RpcEndpointAddress, RpcEndpointRef}
-import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus}
+import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus, SparkListenerInterface}
 import org.apache.spark.util.Utils
 
 private[spark] class SiteContext(
@@ -52,6 +54,7 @@ private[spark] class SiteContext(
   @volatile private var _stageScheduler: StageScheduler = _
   private var _heartbeatReceiver: RpcEndpointRef = _
   private var _cleaner: Option[ContextCleaner] = None
+  private var _listenerBusStarted: Boolean = false
 
   private var _siteAppId: String = _
   private var _siteAppAttemptId: Option[String] = _
@@ -193,7 +196,8 @@ private[spark] class SiteContext(
     executorEnvs ++= _conf.getExecutorEnv
 
     _env = SparkEnv.createSiteDriverEnv(
-      _conf, _siteDriverId, _hostname, _siteDriverCores, ioEncryptionKey, isLocal = false
+      _conf, _siteDriverId, _hostname, listenerBus, _siteDriverCores, ioEncryptionKey,
+      isLocal = false
     )
 
     _heartbeatReceiver = env.rpcEnv.setupEndpoint(
@@ -242,6 +246,7 @@ private[spark] class SiteContext(
     _cleaner.foreach(_.start())
 
     //    env.metricsSystem.start()
+    setupAndStartListenerBus()
 
     _taskScheduler.postStartHook() // 等待集群OK
     _env.metricsSystem.registerSource(_stageScheduler.metricsSource)
@@ -280,9 +285,13 @@ private[spark] class SiteContext(
     bc
   }
 
-  // TODO-lzp: 设立ListenerBus
-  private def setupAndStartListenerBus(): Unit = {
-
+  /**
+   * :: DeveloperApi ::
+   * Register a listener to receive up-calls from events that happen during execution.
+   */
+  @DeveloperApi
+  def addSparkListener(listener: SparkListenerInterface) {
+    listenerBus.addListener(listener)
   }
 
   // 检测SparkContext未停止, 如果停止则抛出异常
@@ -319,6 +328,56 @@ private[spark] class SiteContext(
     }.start()
   }
 
+  private def setupAndStartListenerBus(): Unit = {
+    // Use reflection to instantiate listeners specified via `spark.extraListeners`
+    try {
+      val listenerClassNames: Seq[String] =
+        conf.get("spark.extraListeners", "").split(',').map(_.trim).filter(_ != "")
+      for (className <- listenerClassNames) {
+        // Use reflection to find the right constructor
+        val constructors = {
+          val listenerClass = Utils.classForName(className)
+          listenerClass
+            .getConstructors
+            .asInstanceOf[Array[Constructor[_ <: SparkListenerInterface]]]
+        }
+        val constructorTakingSparkConf = constructors.find { c =>
+          c.getParameterTypes.sameElements(Array(classOf[SparkConf]))
+        }
+        lazy val zeroArgumentConstructor = constructors.find { c =>
+          c.getParameterTypes.isEmpty
+        }
+        val listener: SparkListenerInterface = {
+          if (constructorTakingSparkConf.isDefined) {
+            constructorTakingSparkConf.get.newInstance(conf)
+          } else if (zeroArgumentConstructor.isDefined) {
+            zeroArgumentConstructor.get.newInstance()
+          } else {
+            throw new SparkException(
+              s"$className did not have a zero-argument constructor or a" +
+                " single-argument constructor that accepts SparkConf. Note: if the class is" +
+                " defined inside of another Scala class, then its constructors may accept an" +
+                " implicit parameter that references the enclosing class; in this case, you must" +
+                " define the listener as a top-level class in order to prevent this extra" +
+                " parameter from breaking Spark's ability to find a valid constructor.")
+          }
+        }
+        listenerBus.addListener(listener)
+        logInfo(s"Registered listener $className")
+      }
+    } catch {
+      case e: Exception =>
+        try {
+          stop()
+        } finally {
+          throw new SparkException(s"Exception when registering SparkListener", e)
+        }
+    }
+
+    listenerBus.start()
+    _listenerBusStarted = true
+  }
+
   // TODO-lzp: 目前只是比较粗
   override def stop(): Unit = {
     if (!stopped.compareAndSet(false, true)) {
@@ -333,6 +392,12 @@ private[spark] class SiteContext(
     }
     Utils.tryLogNonFatalError {
       _cleaner.foreach(_.stop())
+    }
+    if (_listenerBusStarted) {
+      Utils.tryLogNonFatalError {
+        listenerBus.stop()
+        _listenerBusStarted = false
+      }
     }
     Utils.tryLogNonFatalError {
       _eventLogger.foreach(_.stop())

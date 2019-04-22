@@ -130,6 +130,9 @@ class BlockManagerMasterEndpoint(
     case BlockManagerHeartbeat(blockManagerId) =>
       context.reply(heartbeatReceived(blockManagerId))
 
+    case BlockManagerSiteHeartbeat(blockManagerId) =>
+      context.reply(siteHeartbeatReceived(blockManagerId))
+
     case HasCachedBlocks(executorId) =>
       blockManagerIdByExecutor.get(executorId) match {
         case Some(bm) =>
@@ -233,6 +236,15 @@ class BlockManagerMasterEndpoint(
     }
   }
 
+  private def siteHeartbeatReceived(blockManagerId: BlockManagerId): Boolean = {
+    if (!blockManagerInfo.contains(blockManagerId)) {
+      blockManagerId.isSiteDriver && !isLocal
+    } else {
+      blockManagerInfo(blockManagerId).updateLastSeenMs()
+      true
+    }
+  }
+
   // Remove a block from the slaves that have it. This can only be used to remove
   // blocks that the master knows about.
   private def removeBlockFromWorkers(blockId: BlockId) {
@@ -323,6 +335,8 @@ class BlockManagerMasterEndpoint(
       idWithoutTopologyInfo: BlockManagerId,
       maxMemSize: Long,
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
+    logInfo(s"##lizp##: $idWithoutTopologyInfo, $maxMemSize, $slaveEndpoint")
+
     // the dummy id is not expected to contain the topology information.
     // we get that info here and respond back with a more fleshed out block manager id
     val id = BlockManagerId(

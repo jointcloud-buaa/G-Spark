@@ -39,7 +39,7 @@ import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, CompressedMapStatus, ExecutorLossReason, ExecutorSlaveLost, HighlyCompressedMapStatus, JobSucceeded, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SparkListenerExecutorMetricsUpdate, SparkListenerJobEnd, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
 import org.apache.spark.storage._
-import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
+import org.apache.spark.storage.BlockManagerMessages.{BlockManagerHeartbeat, BlockManagerSiteHeartbeat}
 import org.apache.spark.util._
 
 private[spark]
@@ -151,7 +151,9 @@ class StageScheduler(
     blockManagerId: BlockManagerId): Boolean = {
     listenerBus.post(SparkListenerExecutorMetricsUpdate(execId, accumUpdates))
     blockManagerMaster.driverEndpoint.askWithRetry[Boolean](
-      BlockManagerHeartbeat(blockManagerId), new RpcTimeout(600 seconds, "BlockManagerHeartbeat"))
+      BlockManagerSiteHeartbeat(blockManagerId),
+      new RpcTimeout(600 seconds, "BlockManagerHeartbeat")
+    )
   }
 
   /**

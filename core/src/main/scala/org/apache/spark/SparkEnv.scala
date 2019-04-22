@@ -271,6 +271,7 @@ object SparkEnv extends Logging {
     conf: SparkConf,
     execId: String,  // siteDriverId
     hostname: String,
+    listenerBus: LiveListenerBus,
     // TODO-lzp: 如果SiteDriver是与应用无关的服务, 则可以为0
     numCores: Int,
     ioEncryptionKey: Option[Array[Byte]],
@@ -333,7 +334,7 @@ object SparkEnv extends Logging {
     val blockManagerMasterRef = rpcEnv.setupEndpoint(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       // TODO-lzp: None, 这里要考虑是否要在SiteDriver上启动ListenerBus
-      new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, None)
+      new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, Some(listenerBus))
     )
     val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
     blockManagerMaster.setGlobalDriverEndpoint(blockManagerGlobalMasterRef)
@@ -420,12 +421,13 @@ object SparkEnv extends Logging {
     val broadcastManager = new BroadcastManager(false, conf, securityManager)
 
     val mapOutputTracker = new MapOutputTrackerWorker(conf)
-//    mapOutputTracker.trackerEndpoint = RpcUtils.makeRef(
-//      MapOutputTracker.ENDPOINT_NAME,
-//      conf.get("spark.siteDriver.host", "localhost"),
-//      conf.getInt("spark.siteDriver.port", 7077),
-//      rpcEnv
-//    )
+    mapOutputTracker.trackerEndpoint = RpcUtils.makeRef(
+      MapOutputTracker.ENDPOINT_NAME,
+      conf.get("spark.siteDriver.host", "localhost"),
+      conf.getInt("spark.siteDriver.port", 7077),
+      rpcEnv
+    )
+    logInfo(s"##lizp##: mapOutputTracker's trackerEndpoint is ${mapOutputTracker.trackerEndpoint}")
 
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
@@ -450,6 +452,7 @@ object SparkEnv extends Logging {
       conf.getInt("spark.siteDriver.port", 7077),
       rpcEnv
     )
+    logInfo(s"##lizp##: blockManagerMasterRef is $blockManagerMasterRef")
     // TODO-lzp: about the isDriver
     val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,

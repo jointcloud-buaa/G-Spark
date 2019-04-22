@@ -68,6 +68,11 @@ class BlockManagerId private (
       executorId == SparkContext.LEGACY_DRIVER_IDENTIFIER
   }
 
+  def isSiteDriver: Boolean = {
+    val pat = s"${SparkContext.SITE_DRIVER_IDENTIFIER_PREFIX}-\\d+".r
+    pat.pattern.matcher(executorId).matches()
+  }
+
   override def writeExternal(out: ObjectOutput): Unit = Utils.tryOrIOException {
     out.writeUTF(executorId_)
     out.writeUTF(host_)

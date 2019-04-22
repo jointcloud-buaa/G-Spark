@@ -112,5 +112,7 @@ private[spark] object BlockManagerMessages {
 
   case class BlockManagerHeartbeat(blockManagerId: BlockManagerId) extends ToBlockManagerMaster
 
+  case class BlockManagerSiteHeartbeat(blockManagerId: BlockManagerId) extends ToBlockManagerMaster
+
   case class HasCachedBlocks(executorId: String) extends ToBlockManagerMaster
 }

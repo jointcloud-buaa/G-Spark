@@ -98,8 +98,7 @@ private[spark] class Executor(
 
   if (!isLocal) {
     env.metricsSystem.registerSource(executorSource)
-    // TODO-lzp: 修复块管理器
-//    env.blockManager.initialize(conf.getAppId)
+    env.blockManager.initialize(conf.getAppId)
   }
 
   // Whether to load classes in user jars before those in Spark jars
