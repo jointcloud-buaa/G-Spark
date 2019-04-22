@@ -69,7 +69,7 @@ private[spark] abstract class Stage(
     @transient val parents: List[Stage],
     @transient val firstJobId: Int,
     val callSite: CallSite)
-  extends Logging {
+  extends Serializable with Logging {
 
   val numPartitions: Int = rdd.partitions.length
 
@@ -98,7 +98,7 @@ private[spark] abstract class Stage(
    * StageInfo to tell SparkListeners when a job starts (which happens before any stage attempts
    * have been created).
    */
-  private var _latestInfo: StageInfo = StageInfo.fromStage(this, nextAttemptId)
+  @transient private var _latestInfo: StageInfo = StageInfo.fromStage(this, nextAttemptId)
 
   /**
    * Set of stage attempt IDs that have failed with a FetchFailure. We keep track of these

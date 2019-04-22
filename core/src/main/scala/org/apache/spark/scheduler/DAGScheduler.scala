@@ -1026,7 +1026,7 @@ class DAGScheduler(
     val desc = hostToParts.zipWithIndex.map { case ((host, parts), idx) =>
       val serializedStage = Stage.serializeWithDependencies(
         stage, jobId, parts.toArray, properties, sc.addedFiles, sc.addedJars, closureSerializer)
-        new StageDescription(stage.id, hostnameToSDriverId(host), idx, serializedStage)
+      new StageDescription(stage.id, hostnameToSDriverId(host), idx, serializedStage)
     }.toSeq
     desc
   }

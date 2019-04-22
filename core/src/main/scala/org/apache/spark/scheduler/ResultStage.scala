@@ -17,6 +17,8 @@
 
 package org.apache.spark.scheduler
 
+import scala.annotation.meta.{field, param}
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.util.CallSite
@@ -32,8 +34,8 @@ private[spark] class ResultStage(
     rdd: RDD[_],
     val func: (TaskContext, Iterator[_]) => _,
     val partitions: Array[Int],
-    parents: List[Stage],
-    firstJobId: Int,
+    @(transient @param) parents: List[Stage],
+    @(transient @param) firstJobId: Int,
     callSite: CallSite)
   extends Stage(id, rdd, partitions.length, parents, firstJobId, callSite) {
 
