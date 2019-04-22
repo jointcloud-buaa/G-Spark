@@ -2586,7 +2586,7 @@
     <profile>
       <id>hadoop-2.9</id>
       <properties>
-        <hadoop.version>2.9.2</hadoop.version>
+        <hadoop.version>2.9.1</hadoop.version>
         <jets3t.version>0.9.4</jets3t.version>
         <zookeeper.version>3.4.9</zookeeper.version>
         <curator.version>2.12.0</curator.version>

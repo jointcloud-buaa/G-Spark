@@ -306,6 +306,12 @@ object SparkEnv extends Logging {
 
     // TODO-lzp: 这里至少应该设置MapOutputTrackerSiteMaster
     val mapOutputTracker = new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
+    mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
+      MapOutputTracker.ENDPOINT_NAME,
+      new MapOutputTrackerMasterEndpoint(
+        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf
+      )
+    )
 
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
