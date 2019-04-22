@@ -16,24 +16,32 @@
  */
 package org.apache.spark.scheduler.cluster
 
+import scala.collection.Map
+
 case class NetworkDistState(
-  idxMap: Map[String, Int],  // TODO-lzp: 不确定是clusterName还是hostname, 尽量hostname
-  bws: Array[Array[Long]],  // kb
-  latencies: Array[Array[Long]]  // ms
+  idxMap: Map[String, Int],
+  bws: Array[Array[Long]],  // Bps, 字节每秒
+  latencies: Array[Array[Int]]  // ms, 毫秒
 )
 
 object NetworkDistState {
+  // 空意味着节点到节点的网速是均匀的  TODO-lzp: 不确定是不是应该无限大, 还是给个有限的值
   def empty(idxMap: Map[String, Int]): NetworkDistState = {
     val len = idxMap.size
-    NetworkDistState(idxMap, Array.ofDim[Long](len, len), Array.ofDim[Long](len, len))
-  }
-
-  def const(idxMap: Map[String, Int], bw: Long, latency: Long): NetworkDistState = {
-    val len = idxMap.size
-    val ary = Array.fill[Long](len, len)(bw)
     NetworkDistState(
       idxMap,
-      Array.fill(len, len)(bw),
-      Array.fill(len, len)(latency))
+      Array.fill[Long](len, len)(Long.MaxValue),
+      Array.fill[Int](len, len)(0)
+    )
+  }
+
+  // 常量意味着, 带宽: 节点到自己是无限大, 到别人是恒速; 延迟: 到自己为0, 到别人是恒量
+  def const(idxMap: Map[String, Int], bw: Long, latency: Int): NetworkDistState = {
+    val len = idxMap.size
+    NetworkDistState(
+      idxMap,
+      Array.tabulate[Long](len, len)((r, c) => if (r == c) Long.MaxValue else bw),
+      Array.tabulate[Int](len, len)((r, c) => if (r == c) 0 else latency)
+    )
   }
 }

@@ -977,12 +977,14 @@ class DAGScheduler(
         return
     }
 
+    // TODO-lzp: 真实的带宽测量
     val bwDist = getBandwitchDist()
 
     val stageDesc = buildStageDescription(jobId, stage, taskIdToDataDist, bwDist, properties)
     backend.launchStages(stageDesc)
   }
 
+  // 带宽是字节每秒, 延迟为ms, 数据是字节
   def buildStageDescription(
     jobId: Int,
     stage: Stage,
@@ -1003,17 +1005,19 @@ class DAGScheduler(
       // TODO-lzp: 这里有没有可能为空
       val dataDist = dataDistState(part)
       val timeToCluster: Array[(Double, String)] = allHosts.map { runHost =>
+        // 这里直接忽略了, 数据在集群本地的情况, 只考虑从别的集群拉数据
         val costT = allHosts.withFilter(_ != runHost).map { othHost =>
           val aIdx = bwDistState.idxMap(runHost)
           val bIdx = bwDistState.idxMap(othHost)
           val costTLatency = bwDistState.latencies(aIdx)(bIdx)
-          val costTTrans =
-            dataDist.getOrElse[Long](othHost, 0).toDouble / bwDistState.bws(aIdx)(bIdx)
+          val dataSize = dataDist.getOrElse[Long](othHost, 0)
+          val costTTrans = dataSize * 1000 / bwDistState.bws(aIdx)(bIdx).toDouble
           // TODO-lzp: 未考虑计算时间
           costTLatency + costTTrans
         }
         (costT.max, runHost)
       }
+      // TODO-lzp: 如何时间都相差不大, 这时候简单的取min似乎意义不大
       val bestHost = timeToCluster.minBy(_._1)._2
       if (!hostToParts.contains(bestHost)) hostToParts(bestHost) = ArrayBuffer.empty
       hostToParts(bestHost) += part
@@ -1029,7 +1033,7 @@ class DAGScheduler(
 
   // TODO-lzp: 从GM处获取带宽测量数据
   def getBandwitchDist(): NetworkDistState = {
-    val tmp = Predef.Map("act-33-36" -> 0, "act-37-41" -> 1, "act-42-46" -> 2)
+    val tmp = Map("act-33-36" -> 0, "act-37-41" -> 1, "act-42-46" -> 2)
     NetworkDistState.const(
       tmp.map{ case (cluster, idx) => (clusterToHost(cluster), idx)},
       1000,
