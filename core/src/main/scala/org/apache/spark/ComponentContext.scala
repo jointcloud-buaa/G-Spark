@@ -21,4 +21,5 @@ trait ComponentContext {
   def conf: SparkConf
   def stop(): Unit
   def stopInNewThread(): Unit
+  protected[spark] def cleaner: Option[ContextCleaner]
 }

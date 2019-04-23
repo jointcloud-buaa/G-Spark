@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.{InternalAccumulator, SparkContext, TaskContext}
+import org.apache.spark.{ComponentContext, InternalAccumulator, TaskContext}
 import org.apache.spark.scheduler.AccumulableInfo
 
 
@@ -47,7 +47,7 @@ abstract class AccumulatorV2[IN, OUT] extends Serializable {
   private[this] var atDriverSide = true
 
   private[spark] def register(
-      sc: SparkContext,
+      sc: ComponentContext,
       name: Option[String] = None,
       countFailedValues: Boolean = false): Unit = {
     if (this.metadata != null) {

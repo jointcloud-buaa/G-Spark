@@ -319,7 +319,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   private[spark] def executorAllocationManager: Option[ExecutorAllocationManager] =
     _executorAllocationManager
 
-  private[spark] def cleaner: Option[ContextCleaner] = _cleaner
+  override def cleaner: Option[ContextCleaner] = _cleaner
 
   private[spark] var checkpointDir: Option[String] = None
 

@@ -234,7 +234,7 @@ class TaskMetrics private[spark] () extends Serializable {
    |        OTHER THINGS        |
    * ========================== */
 
-  private[spark] def register(sc: SparkContext): Unit = {
+  private[spark] def register(sc: ComponentContext): Unit = {
     nameToAccums.foreach {
       case (name, acc) => acc.register(sc, name = Some(name), countFailedValues = true)
     }

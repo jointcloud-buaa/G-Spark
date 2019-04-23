@@ -37,7 +37,7 @@ import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc.{RpcAddress, RpcEndpointAddress, RpcEndpointRef}
 import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus, SparkListenerInterface}
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{AccumulatorV2, CollectionAccumulator, DoubleAccumulator, LongAccumulator, Utils}
 
 private[spark] class SiteContext(
   config: SparkConf, val ioEncryptionKey: Option[Array[Byte]]
@@ -91,7 +91,7 @@ private[spark] class SiteContext(
 
   private[spark] def schedulerBackend: SiteSchedulerBackend = _schedulerBackend
 
-  private[spark] def cleaner: Option[ContextCleaner] = _cleaner
+  override def cleaner: Option[ContextCleaner] = _cleaner
 
   // 为_dagScheduler任务调度器设置getter/setter方法
   private[spark] def stageScheduler: StageScheduler = _stageScheduler
@@ -283,6 +283,80 @@ private[spark] class SiteContext(
     logInfo("Created broadcast " + bc.id)
     cleaner.foreach(_.registerBroadcastForCleanup(bc))
     bc
+  }
+
+  /**
+   * Register the given accumulator.
+   *
+   * @note Accumulators must be registered before use, or it will throw exception.
+   */
+  def register(acc: AccumulatorV2[_, _]): Unit = {
+    acc.register(this)
+  }
+
+  /**
+   * Register the given accumulator with given name.
+   *
+   * @note Accumulators must be registered before use, or it will throw exception.
+   */
+  def register(acc: AccumulatorV2[_, _], name: String): Unit = {
+    acc.register(this, name = Option(name))
+  }
+
+  /**
+   * Create and register a long accumulator, which starts with 0 and accumulates inputs by `add`.
+   */
+  def longAccumulator: LongAccumulator = {
+    val acc = new LongAccumulator
+    register(acc)
+    acc
+  }
+
+  /**
+   * Create and register a long accumulator, which starts with 0 and accumulates inputs by `add`.
+   */
+  def longAccumulator(name: String): LongAccumulator = {
+    val acc = new LongAccumulator
+    register(acc, name)
+    acc
+  }
+
+  /**
+   * Create and register a double accumulator, which starts with 0 and accumulates inputs by `add`.
+   */
+  def doubleAccumulator: DoubleAccumulator = {
+    val acc = new DoubleAccumulator
+    register(acc)
+    acc
+  }
+
+  /**
+   * Create and register a double accumulator, which starts with 0 and accumulates inputs by `add`.
+   */
+  def doubleAccumulator(name: String): DoubleAccumulator = {
+    val acc = new DoubleAccumulator
+    register(acc, name)
+    acc
+  }
+
+  /**
+   * Create and register a `CollectionAccumulator`, which starts with empty list and accumulates
+   * inputs by adding them into the list.
+   */
+  def collectionAccumulator[T]: CollectionAccumulator[T] = {
+    val acc = new CollectionAccumulator[T]
+    register(acc)
+    acc
+  }
+
+  /**
+   * Create and register a `CollectionAccumulator`, which starts with empty list and accumulates
+   * inputs by adding them into the list.
+   */
+  def collectionAccumulator[T](name: String): CollectionAccumulator[T] = {
+    val acc = new CollectionAccumulator[T]
+    register(acc, name)
+    acc
   }
 
   /**

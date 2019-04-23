@@ -47,13 +47,6 @@ private[spark] class ResultStage(
 
   var numFinished = 0
 
-  private[this] var partResults: Array[List[Any]] = _
-
-  override def init(parts: Array[Int]): Unit = {
-    calcPartitions = parts
-    partResults = Array.fill(parts.length)(Nil)
-  }
-
   def activeJob: Option[ActiveJob] = _activeJob
 
   def setActiveJob(job: ActiveJob): Unit = {

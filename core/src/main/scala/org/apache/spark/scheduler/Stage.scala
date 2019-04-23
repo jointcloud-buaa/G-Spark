@@ -30,6 +30,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.SerializerInstance
+import org.apache.spark.siteDriver.SiteContext
 import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, CallSite, Utils}
 
 /**
@@ -78,7 +79,19 @@ private[spark] abstract class Stage(
 
   val pendingPartitions = new HashSet[Int]
 
-  def init(parts: Array[Int]): Unit
+  def init(parts: Array[Int]): Unit = {
+    calcPartitions = parts
+    partResults = Array.fill(parts.length)(Nil)
+    _latestInfo = StageInfo.fromStage(this, nextAttemptId)
+  }
+
+  private var _context: SiteContext = _
+
+  def context_=(ctx: SiteContext): Unit = _context = ctx
+
+  def context: SiteContext = _context
+
+  protected var partResults: Array[List[Any]] = _
 
   private var _calcPartitions: Array[Int] = _
 
@@ -128,8 +141,7 @@ private[spark] abstract class Stage(
       numPartitionsToCompute: Int,
       taskLocalityPreferences: Seq[Seq[TaskLocation]] = Seq.empty): Unit = {
     val metrics = new TaskMetrics
-    // TODO-lzp: 这里会有问题的, 不能使用SparkContext
-    metrics.register(rdd.sparkContext)
+    metrics.register(_context)
     _latestInfo = StageInfo.fromStage(
       this, nextAttemptId, Some(numPartitionsToCompute), metrics, taskLocalityPreferences)
     nextAttemptId += 1

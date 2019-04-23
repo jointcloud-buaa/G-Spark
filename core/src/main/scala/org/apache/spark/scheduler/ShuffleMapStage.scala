@@ -58,9 +58,6 @@ private[spark] class ShuffleMapStage(
     // TODO-lzp: 感觉可以改为calcPartitions.size大小的数组
   @transient private[this] val outputLocs = Array.fill[List[MapStatus]](numPartitions)(Nil)
 
-  // 保存在集群中执行中的结果
-  private[this] var partResults: Array[List[MapStatus]] = _
-
   override def toString: String = "ShuffleMapStage " + id
 
   // ==== 在GD中执行
@@ -128,11 +125,6 @@ private[spark] class ShuffleMapStage(
 
   // ==== 在SD中执行
 
-  override def init(parts: Array[Int]): Unit = {
-    calcPartitions = parts
-    partResults = Array.fill(parts.length)(Nil)
-  }
-
   def isSiteAvailable: Boolean = _numAvailableOutputs == calcPartitions.length
 
   /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
@@ -152,7 +144,7 @@ private[spark] class ShuffleMapStage(
   }
 
   def getPartResults: Array[MapStatus] = {
-    partResults.map(_.headOption.orNull)
+    partResults.map(_.headOption.orNull.asInstanceOf[MapStatus])
   }
 
   /**
@@ -164,7 +156,7 @@ private[spark] class ShuffleMapStage(
     var becameUnavailable = false
     for (idx <- calcPartitions.indices) {
       val prevList = partResults(idx)
-      val newList = prevList.filterNot(_.location.executorId == execId)
+      val newList = prevList.filterNot(_.asInstanceOf[MapStatus].location.executorId == execId)
       partResults(idx) = newList
       if (prevList != Nil && newList == Nil) {
         becameUnavailable = true
