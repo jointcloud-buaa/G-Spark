@@ -19,7 +19,7 @@ package org.apache.spark.siteDriver
 import scala.language.existentials
 
 import org.apache.spark.TaskEndReason
-import org.apache.spark.scheduler.{ExecutorLossReason, StageDescription, Task, TaskInfo, TaskSet}
+import org.apache.spark.scheduler.{ExecutorLossReason, Stage, Task, TaskInfo, TaskSet}
 import org.apache.spark.util.AccumulatorV2
 
 private[siteDriver] sealed trait StageSchedulerEvent
@@ -59,4 +59,4 @@ private[siteDriver] case object ResubmitFailedStages extends StageSchedulerEvent
 // 取消阶段
 private[siteDriver] case class StageCancelled(stageId: Int) extends StageSchedulerEvent
 
-private[siteDriver] case class StageSubmitted(stage: StageDescription) extends StageSchedulerEvent
+private[siteDriver] case class StageSubmitted(jobId: Int, stage: Stage) extends StageSchedulerEvent

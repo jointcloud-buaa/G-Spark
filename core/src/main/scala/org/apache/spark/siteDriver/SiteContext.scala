@@ -16,8 +16,9 @@
  */
 package org.apache.spark.siteDriver
 
+import java.io.{File, FileNotFoundException}
 import java.lang.reflect.Constructor
-import java.net.URI
+import java.net.{URI, URL}
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
@@ -27,8 +28,9 @@ import scala.reflect.{classTag, ClassTag}
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 
-import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv, SparkException}
+import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv, SparkException, SparkFiles}
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -40,7 +42,7 @@ import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus, SparkL
 import org.apache.spark.util.{AccumulatorV2, CollectionAccumulator, DoubleAccumulator, LongAccumulator, Utils}
 
 private[spark] class SiteContext(
-  config: SparkConf, val ioEncryptionKey: Option[Array[Byte]]
+  config: SparkConf, val ioEncryptionKey: Option[Array[Byte]], _userClassPath: Seq[URL]
 ) extends ComponentContext with Logging {
 
   private var _conf: SparkConf = _
@@ -69,6 +71,10 @@ private[spark] class SiteContext(
   private var _siteMasterName: String = _
 
   private var _executorMemory: Int = _
+
+  // Used to store a URL for each static file/jar together with the file's local timestamp
+  private[spark] val addedFiles = new ConcurrentHashMap[String, Long]().asScala
+  private[spark] val addedJars = new ConcurrentHashMap[String, Long]().asScala
 
   private[spark] val executorEnvs = HashMap.empty[String, String]
   private[spark] val stopped: AtomicBoolean = new AtomicBoolean(false)
@@ -99,6 +105,8 @@ private[spark] class SiteContext(
   private[spark] def stageScheduler_=(ds: StageScheduler): Unit = {
     _stageScheduler = ds
   }
+
+  def userClassPath(): Seq[URL] = _userClassPath
 
   /**
    * A default Hadoop Configuration for the Hadoop code (e.g. file systems) that we reuse.
@@ -266,6 +274,130 @@ private[spark] class SiteContext(
         throw e
       }
   }
+
+  /**
+   * Adds a JAR dependency for all tasks to be executed on this SparkContext in the future.
+   * The `path` passed can be either a local file, a file in HDFS (or other Hadoop-supported
+   * filesystems), an HTTP, HTTPS or FTP URI, or local:/path for a file on every worker node.
+   */
+  def addJar(path: String) {
+    if (path == null) {
+      logWarning("null specified as parameter to addJar")
+    } else {
+      var key = ""
+      if (path.contains("\\")) {
+        // For local paths with backslashes on Windows, URI throws an exception
+        key = env.rpcEnv.fileServer.addJar(new File(path))
+      } else {
+        val uri = new URI(path)
+        // SPARK-17650: Make sure this is a valid URL before adding it to the list of dependencies
+        Utils.validateURL(uri)
+        key = uri.getScheme match {
+          // A JAR file which exists only on the driver node
+          case null | "file" =>
+            try {
+              val file = new File(uri.getPath)
+              if (!file.exists()) {
+                throw new FileNotFoundException(s"Jar ${file.getAbsolutePath} not found")
+              }
+              if (file.isDirectory) {
+                throw new IllegalArgumentException(
+                  s"Directory ${file.getAbsoluteFile} is not allowed for addJar")
+              }
+              env.rpcEnv.fileServer.addJar(new File(uri.getPath))
+            } catch {
+              case NonFatal(e) =>
+                logError(s"Failed to add $path to Spark environment", e)
+                null
+            }
+          // A JAR file which exists locally on every worker node
+          case "local" =>
+            "file:" + uri.getPath
+          case _ =>
+            path
+        }
+      }
+      if (key != null) {
+        val timestamp = System.currentTimeMillis
+        if (addedJars.putIfAbsent(key, timestamp).isEmpty) {
+          logInfo(s"Added JAR $path at $key with timestamp $timestamp")
+//          postEnvironmentUpdate()
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns a list of jar files that are added to resources.
+   */
+  def listJars(): Seq[String] = addedJars.keySet.toSeq
+
+  /**
+   * Add a file to be downloaded with this Spark job on every node.
+   * The `path` passed can be either a local file, a file in HDFS (or other Hadoop-supported
+   * filesystems), or an HTTP, HTTPS or FTP URI.  To access the file in Spark jobs,
+   * use `SparkFiles.get(fileName)` to find its download location.
+   */
+  def addFile(path: String): Unit = {
+    addFile(path, false)
+  }
+
+  /**
+   * Returns a list of file paths that are added to resources.
+   */
+  def listFiles(): Seq[String] = addedFiles.keySet.toSeq
+
+  /**
+   * Add a file to be downloaded with this Spark job on every node.
+   * The `path` passed can be either a local file, a file in HDFS (or other Hadoop-supported
+   * filesystems), or an HTTP, HTTPS or FTP URI.  To access the file in Spark jobs,
+   * use `SparkFiles.get(fileName)` to find its download location.
+   *
+   * A directory can be given if the recursive option is set to true. Currently directories are only
+   * supported for Hadoop-supported filesystems.
+   */
+  def addFile(path: String, recursive: Boolean): Unit = {
+    val uri = new Path(path).toUri
+    val schemeCorrectedPath = uri.getScheme match {
+      case null | "local" => new File(path).getCanonicalFile.toURI.toString
+      case _ => path
+    }
+
+    val hadoopPath = new Path(schemeCorrectedPath)
+    val scheme = new URI(schemeCorrectedPath).getScheme
+    if (!Array("http", "https", "ftp").contains(scheme)) {
+      val fs = hadoopPath.getFileSystem(hadoopConfiguration)
+      val isDir = fs.getFileStatus(hadoopPath).isDirectory
+      if (!isLocal && scheme == "file" && isDir) {
+        throw new SparkException(s"addFile does not support local directories when not running " +
+          "local mode.")
+      }
+      if (!recursive && isDir) {
+        throw new SparkException(s"Added file $hadoopPath is a directory and recursive is not " +
+          "turned on.")
+      }
+    } else {
+      // SPARK-17650: Make sure this is a valid URL before adding it to the list of dependencies
+      Utils.validateURL(uri)
+    }
+
+    val key = if (!isLocal && scheme == "file") {
+      env.rpcEnv.fileServer.addFile(new File(uri.getPath))
+    } else {
+      schemeCorrectedPath
+    }
+    val timestamp = System.currentTimeMillis
+    if (addedFiles.putIfAbsent(key, timestamp).isEmpty) {
+      logInfo(s"Added file $path at $key with timestamp $timestamp")
+      // Fetch the file locally so that closures which are run on the driver can still use the
+      // SparkFiles API to access files.
+      // TODO-lzp: 这里HDFS的文件反而不是全局了, 如果添加file, 则file最好在当前集群的HDFS中存在.
+      Utils.fetchFile(uri.toString, new File(SparkFiles.getRootDirectory()), conf,
+        env.securityManager, hadoopConfiguration, timestamp, useCache = false)
+//      postEnvironmentUpdate()
+    }
+  }
+
 
   /**
    * Broadcast a read-only variable to the cluster, returning a

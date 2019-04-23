@@ -452,8 +452,8 @@ private[spark] class TaskSetManager(
         val serializedTask: ByteBuffer = try {
           Task.serializeWithDependencies(
             task,
-            sched.stageScheduler.currentFiles,
-            sched.stageScheduler.currentJars,
+            sched.ssc.addedFiles,
+            sched.ssc.addedJars,
             ser
           )
         } catch {

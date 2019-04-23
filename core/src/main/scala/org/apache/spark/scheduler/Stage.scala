@@ -82,7 +82,6 @@ private[spark] abstract class Stage(
   def init(parts: Array[Int]): Unit = {
     calcPartitions = parts
     partResults = Array.fill(parts.length)(Nil)
-    _latestInfo = StageInfo.fromStage(this, nextAttemptId)
   }
 
   private var _context: SiteContext = _

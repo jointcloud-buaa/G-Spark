@@ -82,8 +82,11 @@ class StageScheduler(
   private[siteDriver] val failedStages = new HashSet[Stage]
   private[siteDriver] val shuffleIdToMapStage = new HashMap[Int, ShuffleMapStage]
 
-  val currentFiles: HashMap[String, Long] = new HashMap[String, Long]()
-  val currentJars: HashMap[String, Long] = new HashMap[String, Long]()
+  // Application dependencies (added through SparkContext) that we've fetched so far on this node.
+  // Each map holds the master's timestamp for the version of that file or JAR we got.
+  // 表示获取的依赖
+  private val currentFiles: HashMap[String, Long] = new HashMap[String, Long]()
+  private val currentJars: HashMap[String, Long] = new HashMap[String, Long]()
 
   // For tracking failed nodes, we use the MapOutputTracker's epoch number, which is sent with
   // every task. When we detect a node failing, we note the current epoch number and failed
@@ -97,10 +100,23 @@ class StageScheduler(
 
   // A closure serializer that we reuse.
   // This is only safe because StageScheduler runs in a single thread.
-  private val closureSerializer = SparkEnv.get.closureSerializer.newInstance()
+  private val closureSerializer = env.closureSerializer.newInstance()
 
   /** If enabled, FetchFailed will not cause stage retry, in order to surface the problem. */
   private val disallowStageRetryForTest = ssc.getConf.getBoolean("spark.test.noStageRetry", false)
+
+  // Whether to load classes in user jars before those in Spark jars
+  private val userClassPathFirst = conf.getBoolean("spark.siteDriver.userClassPathFirst", false)
+
+  // Create our ClassLoader
+  // do this after SparkEnv creation so can access the SecurityManager
+  private val urlClassLoader = createClassLoader()
+
+  // Set the classloader for serializer
+  env.serializer.setDefaultClassLoader(urlClassLoader)
+  // SPARK-21928.  SerializerManager's internal instance of Kryo might get used in netty threads
+  // for fetching remote cached RDD blocks, so need to make sure it uses the right classloader too.
+  env.serializerManager.setDefaultClassLoader(urlClassLoader)
 
   private val messageScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("dag-scheduler-message")
@@ -109,14 +125,58 @@ class StageScheduler(
   taskScheduler.setStageScheduler(this)
 
   /**
+   * Create a ClassLoader for use in tasks, adding any JARs specified by the user or any classes
+   * created by the interpreter to the search path
+   */
+  private def createClassLoader(): MutableURLClassLoader = {
+    // Bootstrap the list of jars with the user class path.
+    val now = System.currentTimeMillis()
+    ssc.userClassPath.foreach { url =>
+      currentJars(url.getPath().split("/").last) = now
+    }
+
+    val currentLoader = Utils.getContextOrSparkClassLoader
+
+    // For each of the jars in the jarSet, add them to the class loader.
+    // We assume each of the files has already been fetched.
+    val urls = ssc.userClassPath.toArray ++ currentJars.keySet.map { uri =>
+      new File(uri.split("/").last).toURI.toURL
+    }
+    if (userClassPathFirst) {
+      new ChildFirstURLClassLoader(urls, currentLoader)
+    } else {
+      new MutableURLClassLoader(urls, currentLoader)
+    }
+  }
+
+  /**
    * Called by the TaskSetManager to report task's starting.
    */
   def taskStarted(task: Task[_], taskInfo: TaskInfo) {
     eventProcessLoop.post(BeginEvent(task, taskInfo))
   }
 
-  def stageSubmitted(stage: StageDescription): Unit = {
-    eventProcessLoop.post(StageSubmitted(stage))
+  def stageSubmitted(stageDesc: StageDescription): Unit = {
+    val stageId = stageDesc.stageId
+    logInfo(s"stage($stageId) is submitted to StageScheduler")
+    val subStageIdx = stageDesc.index
+    stageIdToIdx(stageId) = subStageIdx
+
+    Thread.currentThread.setContextClassLoader(urlClassLoader)
+
+    val (stageFiles, stageJars, stageProps, parts, jobId, stageBytes) =
+      Stage.deserializeWithDependencies(stageDesc.serializedStage)
+    stageIdToProperties(stageId) = stageProps
+
+    updateDependencies(stageFiles, stageJars)
+
+    val stage = closureSerializer.deserialize[Stage](
+      stageBytes, Thread.currentThread.getContextClassLoader)  // 必须指定classLoader
+    stage.init(parts)
+
+    stageIdToStage(stage.id) = stage
+
+    eventProcessLoop.post(StageSubmitted(jobId, stage))
   }
 
   /**
@@ -197,6 +257,10 @@ class StageScheduler(
         Utils.fetchFile(name, new File(SparkFiles.getRootDirectory()), conf,
           env.securityManager, hadoopConf, timestamp, useCache = false)
         currentFiles(name) = timestamp
+
+        // 以下再加入到SiteDriver的file server
+        val localName = name.split("/").last
+        ssc.addFile(new File(SparkFiles.getRootDirectory(), localName).getPath)
       }
       for ((name, timestamp) <- newJars) {
         val localName = name.split("/").last
@@ -211,6 +275,14 @@ class StageScheduler(
             env.securityManager, hadoopConf, timestamp, useCache = false)
 
           currentJars(name) = timestamp
+
+          // Add it to our class loader
+          val url = new File(SparkFiles.getRootDirectory(), localName).toURI.toURL
+          ssc.addJar(url.toString)
+          if (!urlClassLoader.getURLs().contains(url)) {
+            logInfo("Adding " + url + " to class loader")
+            urlClassLoader.addURL(url)
+          }
         }
       }
     }
@@ -742,14 +814,7 @@ class StageScheduler(
     failStage(stageId, s"because Stage $stageId was cancelled")
   }
 
-  private[siteDriver] def handleStageSubmitted(stageDesc: StageDescription): Unit = {
-    val (stageFiles, stageJars, stageProps, parts, jobId, stageBytes) =
-      Stage.deserializeWithDependencies(stageDesc.serializedStage)
-    val subStageIdx = stageDesc.index
-    stageIdToIdx(stageDesc.stageId) = subStageIdx
-    val stage = closureSerializer.deserialize[Stage](stageBytes)
-    stage.init(parts)
-
+  private[siteDriver] def handleStageSubmitted(jobId: Int, stage: Stage): Unit = {
     // 注册下Shuffle
     stage match {
       case sms: ShuffleMapStage =>
@@ -771,10 +836,8 @@ class StageScheduler(
 
     // TODO-lzp: to delete
     logInfo(stage.toDebugString())
-    stageIdToStage(stage.id) = stage
-    stageIdToProperties(stage.id) = stageProps
-    updateDependencies(stageFiles, stageJars)
-    submitMissingTasks(stage, jobId, stageProps)
+
+    submitMissingTasks(stage, jobId, stageIdToProperties(stage.id))
   }
 
   // TODO-lzp: 取消在此SiteDriver执行的所有Stages
@@ -959,8 +1022,8 @@ private[siteDriver] class StageSchedulerEventProcessLoop(stageScheduler: StageSc
     case StageCancelled(stageId) =>
       stageScheduler.handleStageCancellation(stageId)
 
-    case StageSubmitted(stage) =>
-      stageScheduler.handleStageSubmitted(stage)
+    case StageSubmitted(jobId, stage) =>
+      stageScheduler.handleStageSubmitted(jobId, stage)
 
     case ExecutorAdded(execId, host) =>
       stageScheduler.handleExecutorAdded(execId, host)

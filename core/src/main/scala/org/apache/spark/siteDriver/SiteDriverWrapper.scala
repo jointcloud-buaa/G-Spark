@@ -81,7 +81,7 @@ object SiteDriverWrapper extends Logging {
       }
 
       val ssc = new SiteContext(
-        gdriverConf, cfg.ioEncryptionKey
+        gdriverConf, cfg.ioEncryptionKey, userClassPath
       )
 
 
