@@ -17,7 +17,7 @@
 
 package org.apache.spark.scheduler
 
-import java.io.{DataInputStream, DataOutputStream}
+import java.io.{DataInputStream, DataOutputStream, ObjectInputStream, ObjectOutputStream}
 import java.nio.ByteBuffer
 import java.util.Properties
 
@@ -80,23 +80,15 @@ private[spark] abstract class Stage(
   val pendingPartitions = new HashSet[Int]
 
   def init(parts: Array[Int]): Unit = {
-    calcPartitions = parts
+    _calcPartIds = parts
     partResults = Array.fill(parts.length)(Nil)
   }
 
-  private var _context: SiteContext = _
-
-  def context_=(ctx: SiteContext): Unit = _context = ctx
-
-  def context: SiteContext = _context
-
   protected var partResults: Array[List[Any]] = _
 
-  private var _calcPartitions: Array[Int] = _
+  private var _calcPartIds: Array[Int] = _
 
-  def calcPartitions_=(_partitions: Array[Int]): Unit = _calcPartitions = _partitions
-
-  def calcPartitions: Array[Int] = _calcPartitions
+  def calcPartIds: Array[Int] = _calcPartIds
 
   /** The ID to use for the next new attempt for this stage. */
   private var nextAttemptId: Int = 0
@@ -137,10 +129,11 @@ private[spark] abstract class Stage(
 
   /** Creates a new attempt for this stage by creating a new StageInfo with a new attempt ID. */
   def makeNewStageAttempt(
+      ctx: ComponentContext,
       numPartitionsToCompute: Int,
       taskLocalityPreferences: Seq[Seq[TaskLocation]] = Seq.empty): Unit = {
     val metrics = new TaskMetrics
-    metrics.register(_context)
+    metrics.register(ctx)
     _latestInfo = StageInfo.fromStage(
       this, nextAttemptId, Some(numPartitionsToCompute), metrics, taskLocalityPreferences)
     nextAttemptId += 1
@@ -160,17 +153,6 @@ private[spark] abstract class Stage(
   def findMissingPartitions(): Seq[Int]
 
   def findGlobalMissingPartitions(): Seq[Int]
-
-  def toDebugString(): String = {
-    s"""the stage($id):
-       |name: $name
-       |numTasks: $numTasks
-       |rdd: $rdd
-       |numPartitions: $numPartitions
-       |calcPartitions: $calcPartitions
-       |pendingPartitions: $pendingPartitions
-     """.stripMargin
-  }
 }
 
 private[spark] object Stage {
@@ -180,7 +162,7 @@ private[spark] object Stage {
   def serializeWithDependencies(
     stage: Stage,
     jobId: Int,
-    parts: Array[Int],
+    parts: Array[Partition],
     properties: Properties,
     currentFiles: mutable.Map[String, Long],
     currentJars: mutable.Map[String, Long],
@@ -209,21 +191,29 @@ private[spark] object Stage {
     dataOut.writeInt(propBytes.length)
     dataOut.write(propBytes)
 
-    dataOut.writeInt(parts.length)
-    parts.foreach(i => dataOut.writeInt(i))
-
     dataOut.writeInt(jobId)
 
-    // Write the task itself and finish
+    dataOut.writeInt(parts.length)
     dataOut.flush()
+
+    val objOut = new ObjectOutputStream(out)
+    parts.foreach(p => objOut.writeObject(p))
+    objOut.flush()
+
+    // Write the task itself and finish
     val stageBytes = serializer.serialize(stage)
     Utils.writeByteBuffer(stageBytes, out)
     out.close()
     out.toByteBuffer
   }
 
-  def deserializeWithDependencies(serializedStage: ByteBuffer)
-  : (HashMap[String, Long], HashMap[String, Long], Properties, Array[Int], Int, ByteBuffer) = {
+  def deserializeWithDependencies(serializedStage: ByteBuffer): (
+    HashMap[String, Long],  // files
+    HashMap[String, Long],  // jars
+    Properties,             // properties
+    Array[Partition],       // partitions
+    Int,                    // jobId
+    ByteBuffer) = {
 
     val in = new ByteBufferInputStream(serializedStage)
     val dataIn = new DataInputStream(in)
@@ -247,11 +237,12 @@ private[spark] object Stage {
     dataIn.readFully(propBytes, 0, propLength)
     val stageProps = Utils.deserialize[Properties](propBytes)
 
-    val aryLen = dataIn.readInt()
-    val parts = Array.ofDim[Int](aryLen)
-    (0 until aryLen).foreach(idx => parts(idx) = dataIn.readInt())
-
     val jobId = dataIn.readInt()
+
+    val aryLen = dataIn.readInt()
+    val parts = Array.ofDim[Partition](aryLen)
+    val objIn = new ObjectInputStream(in)
+    (0 until aryLen).foreach(idx => parts(idx) = objIn.readObject().asInstanceOf[Partition])
 
     // Create a sub-buffer for the rest of the data, which is the serialized Task object
     val subBuffer = serializedStage.slice()  // ByteBufferInputStream will have read just up to task
@@ -261,8 +252,7 @@ private[spark] object Stage {
   def serializeStageResult(
     stageId: Int,
     parts: Array[Int],
-    results: Array[_],
-    serializer: SerializerInstance
+    results: Array[_]
   ): ByteBuffer = {
     val out = new ByteBufferOutputStream(4096)
     val dataOut = new DataOutputStream(out)
@@ -272,18 +262,18 @@ private[spark] object Stage {
     dataOut.writeInt(parts.length)
     parts.foreach(dataOut.writeInt)
 
+    dataOut.writeInt(results.length)
     dataOut.flush()
-    val resultBytes = serializer.serialize(results)
-    Utils.writeByteBuffer(resultBytes, out)
+    val objOut = new ObjectOutputStream(out)
+    results.foreach(objOut.writeObject)
+
+    objOut.flush()
 
     out.close()
     out.toByteBuffer
   }
 
-  def deserializeStageResult(
-    serializedResult: ByteBuffer,
-    serializer: SerializerInstance
-  ): (Array[_], Array[Int], Int) = {
+  def deserializeStageResult(serializedResult: ByteBuffer): (Array[_], Array[Int], Int) = {
     val in = new ByteBufferInputStream(serializedResult)
     val dataIn = new DataInputStream(in)
 
@@ -293,8 +283,10 @@ private[spark] object Stage {
     val parts = Array.ofDim[Int](partsLen)
     (0 until partsLen).foreach(idx => parts(idx) = dataIn.readInt())
 
-    val subBuffer = serializedResult.slice()
-    val results = serializer.deserialize[Array[_]](subBuffer)
+    val rstLen = dataIn.readInt()
+    val results = Array.ofDim[Any](rstLen)
+    val objIn = new ObjectInputStream(in)
+    (0 until rstLen).foreach(idx => results(idx) = objIn.readObject())
     (results, parts, stageId)
   }
 }

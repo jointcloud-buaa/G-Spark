@@ -21,9 +21,8 @@ import java.io.{File, NotSerializableException}
 import java.nio.ByteBuffer
 import java.util.Properties
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
-import scala.collection.Map
+import scala.collection.{mutable, Map}
 import scala.collection.mutable.{HashMap, HashSet, Stack}
 import scala.concurrent.duration._
 import scala.language.existentials
@@ -74,6 +73,12 @@ class StageScheduler(
   private val cacheLocs = new HashMap[Int, IndexedSeq[Seq[TaskLocation]]]
 
   private[siteDriver] val stageIdToStage = new HashMap[Int, Stage] // stageId -> Stage
+  private[siteDriver] val stageIdToPartitions = new HashMap[Int, Array[Partition]]
+  private[siteDriver] val stagePartIdToIndex = new HashMap[Int, Map[Int, Int]]
+
+  // TODO-lzp: 以下的变量就只是为了实现，向此集群隐式rdd的真实partId, 实现相当恶心, 还有缺陷
+  private[siteDriver] val rddIdToStageId = new HashMap[Int, Int]
+
   // TODO-lzp: 目前还不清楚这有什么用, 记录subStage的Index
   private[siteDriver] val stageIdToIdx = new HashMap[Int, Int] // stageId -> Index
   private[siteDriver] val stageIdToProperties = new HashMap[Int, Properties]
@@ -172,9 +177,22 @@ class StageScheduler(
 
     val stage = closureSerializer.deserialize[Stage](
       stageBytes, Thread.currentThread.getContextClassLoader)  // 必须指定classLoader
-    stage.init(parts)
+
+    stage.init(parts.map(_.index))
 
     stageIdToStage(stage.id) = stage
+    stageIdToPartitions(stage.id) = parts
+
+    // TODO-lzp: 递归添加， 太恶心了，代码
+    rddIdToStageId(stage.rdd.id) = stage.id
+    var deps = stage.rdd.dependencies
+    while (deps.nonEmpty && deps.head.isInstanceOf[NarrowDependency[_]]) {
+      val _rdd = deps.head.rdd
+      rddIdToStageId(_rdd.id) = stage.id
+      deps = _rdd.dependencies
+    }
+
+    stagePartIdToIndex(stage.id) = parts.zipWithIndex.map{case (p, idx) => (p.index, idx)}.toMap
 
     eventProcessLoop.post(StageSubmitted(jobId, stage))
   }
@@ -332,6 +350,7 @@ class StageScheduler(
     stage.pendingPartitions.clear()
 
     // First figure out the indexes of partition ids to compute.
+    // 用来索引Stage的calcPartIds和partResults
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
 
     runningStages += stage
@@ -344,30 +363,29 @@ class StageScheduler(
         outputCommitCoordinator.stageStart(stage = s.id, maxPartitionId = s.numPartitions - 1)
       case s: ResultStage =>
         outputCommitCoordinator.stageStart(
-          stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
+          stage = s.id, maxPartitionId = s.rdd.numSplits - 1)
     }
+    // TODO-lzp: 感觉一样， 删掉一部分吧
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       stage match {
         case s: ShuffleMapStage =>
           partitionsToCompute.map { id =>
-            val p = s.calcPartitions(id)
-            (id, getPreferredLocs(stage.rdd, p)) }.toMap
+            (id, getPreferredLocs(stage.id, stage.rdd, id)) }.toMap
         case s: ResultStage =>
           partitionsToCompute.map { id =>
-            val p = s.calcPartitions(id)
-            (id, getPreferredLocs(stage.rdd, p))
+            (id, getPreferredLocs(stage.id, stage.rdd, id))
           }.toMap
       }
     } catch {
       case NonFatal(e) =>
-        stage.makeNewStageAttempt(partitionsToCompute.size)
+        stage.makeNewStageAttempt(ssc, partitionsToCompute.size)
         listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
         abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
         return
     }
 
-    stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocations.values.toSeq)
+    stage.makeNewStageAttempt(ssc, partitionsToCompute.size, taskIdToLocations.values.toSeq)
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 
     // TODO: Maybe we can keep the taskBinary in Stage to avoid serializing it multiple times.
@@ -393,8 +411,7 @@ class StageScheduler(
           case stage: ResultStage =>
             JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
         }
-
-        partitions = stage.rdd.partitions
+        partitions = stageIdToPartitions(stage.id)
       }
 
       taskBinary = ssc.broadcast(taskBinaryBytes)
@@ -413,22 +430,21 @@ class StageScheduler(
     }
 
     val tasks: Seq[Task[_]] = try {
+      // TODO-lzp: 合并一些变量
       stage match {
         case stage: ShuffleMapStage =>
           partitionsToCompute.map { id =>
             val locs = taskIdToLocations(id)
-            val p: Int = stage.calcPartitions(id)
-            val part = partitions(p)
+            val part = partitions(id)
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptId,
               taskBinary, part, locs, id, stage.latestInfo.taskMetrics, properties, Option(jobId),
               Option(ssc.siteAppId), ssc.siteAppAttemptId)
           }
 
         case stage: ResultStage =>
-          partitionsToCompute.map { id =>
+          partitionsToCompute.map { id =>  // 在集群本地分配到的分区数组中的索引
             val locs = taskIdToLocations(id)
-            val p: Int = stage.calcPartitions(id)
-            val part = partitions(p)
+            val part = partitions(id)
             new ResultTask(stage.id, stage.latestInfo.attemptId,
               taskBinary, part, locs, id, properties, stage.latestInfo.taskMetrics,
               Option(jobId), Option(ssc.siteAppId), ssc.siteAppAttemptId)
@@ -514,12 +530,15 @@ class StageScheduler(
   def getCacheLocs(rdd: RDD[_]): IndexedSeq[Seq[TaskLocation]] = cacheLocs.synchronized {
     // Note: this doesn't use `getOrElse()` because this method is called O(num tasks) times
     if (!cacheLocs.contains(rdd.id)) {
+      // TODO-lzp: 虽然实现的非常恶心， 但是本质上，它希望知道一个RDD在此集群上的分区.
+      // 此处还假设了每个RDD只有一依赖
+      val parts = stageIdToPartitions(rddIdToStageId(rdd.id))
       // Note: if the storage level is NONE, we don't need to get locations from block manager.
       val locs: IndexedSeq[Seq[TaskLocation]] = if (rdd.getStorageLevel == StorageLevel.NONE) {
-        IndexedSeq.fill(rdd.partitions.length)(Nil)  // 用Nil填充
+        IndexedSeq.fill(parts.length)(Nil)  // 用Nil填充
       } else {
-        val blockIds = rdd.partitions.indices.map(
-          index => RDDBlockId(rdd.id, index)).toArray[BlockId]
+        val blockIds = parts.map(_.index).map(
+          partId => RDDBlockId(rdd.id, partId)).toArray[BlockId]
         blockManagerMaster.getLocations(blockIds).map { bms =>
           bms.map(bm => TaskLocation(bm.host, bm.executorId))
         }
@@ -588,13 +607,13 @@ class StageScheduler(
             // TODO Refactor this out to a function that accepts a ResultStage
             val resultStage = stage.asInstanceOf[ResultStage]
             updateAccumulators(event)
+            // outputId用来索引calcPartIds和partResults
             resultStage.addPartResult(rt.outputId, event.result)
             if (resultStage.isSiteAvailble()) {
               val result = Stage.serializeStageResult(
                 resultStage.id,
-                resultStage.calcPartitions,
-                resultStage.getPartResults,
-                closureSerializer
+                resultStage.calcPartIds,
+                resultStage.getPartResults
               )
               taskScheduler.asInstanceOf[TaskSchedulerImpl].backend
                 .reportStageFinished(result)
@@ -627,7 +646,7 @@ class StageScheduler(
               //       we registered these map outputs.
               mapOutputTracker.registerMapOutputs(
                 shuffleStage.shuffleDep.shuffleId,
-                shuffleStage.calcPartitions,
+                shuffleStage.calcPartIds,
                 shuffleStage.getPartResults,
                 // TODO-lzp: 不是很确定是否要更改
                 changeEpoch = true)
@@ -640,9 +659,8 @@ class StageScheduler(
               }
               val result = Stage.serializeStageResult(
                 shuffleStage.id,
-                shuffleStage.calcPartitions,
-                newMapStatuses,
-                closureSerializer
+                shuffleStage.calcPartIds,
+                newMapStatuses
               )
               taskScheduler.asInstanceOf[TaskSchedulerImpl].backend
                 .reportStageFinished(result)
@@ -786,7 +804,7 @@ class StageScheduler(
           stage.removeOutputsOnExecutor(execId)
           mapOutputTracker.registerMapOutputs(
             shuffleId,
-            stage.calcPartitions,
+            stage.calcPartIds,
             stage.getPartResults,
             changeEpoch = true
           )
@@ -829,13 +847,10 @@ class StageScheduler(
             }
           }
         } else {
-          mapOutputTracker.registerShuffle(dep.shuffleId, stage.calcPartitions.length)
+          mapOutputTracker.registerShuffle(dep.shuffleId, stage.calcPartIds.length)
         }
       case _ =>
     }
-
-    // TODO-lzp: to delete
-    logInfo(stage.toDebugString())
 
     submitMissingTasks(stage, jobId, stageIdToProperties(stage.id))
   }
@@ -928,12 +943,13 @@ class StageScheduler(
    * This method is thread-safe and is called from both StageScheduler and SparkContext.
    *
    * @param rdd       whose partitions are to be looked at
-   * @param partition to lookup locality information for
+   * @param idx to lookup locality information for
    * @return list of machines that are preferred by the partition
    */
-  private[spark]
-  def getPreferredLocs(rdd: RDD[_], partition: Int): Seq[TaskLocation] = {
-    getPreferredLocsInternal(rdd, partition, new HashSet)
+  // idx表示求第几个分区的位置偏好， 因为此集群只得到了一部分的分区， 因此不能以分区ID来计算
+  // TODO-lzp: 这里有问题， 只是临时这么写, 相当于假设了每个RDD只有一个父分区
+  private[spark] def getPreferredLocs(stageId: Int, rdd: RDD[_], idx: Int): Seq[TaskLocation] = {
+    getPreferredLocsInternal(stageId, rdd, idx, new HashSet)
   }
 
   /**
@@ -943,24 +959,27 @@ class StageScheduler(
    * methods (getCacheLocs()); please be careful when modifying this method, because any new
    * StageScheduler state accessed by it may require additional synchronization.
    */
-  // TODO-lzp: 另外需要注意的是, 这里的位置偏好, 是有缺失的, 只有当前集群的偏好
   private def getPreferredLocsInternal(
+    stageId: Int,
     rdd: RDD[_],
-    partition: Int,
+    idx: Int,
     visited: HashSet[(RDD[_], Int)]): Seq[TaskLocation] = {
     // If the partition has already been visited, no need to re-visit.
     // This avoids exponential path exploration.  SPARK-695
-    if (!visited.add((rdd, partition))) {
+    if (!visited.add((rdd, idx))) {
       // Nil has already been returned for previously visited partitions.
       return Nil
     }
     // If the partition is cached, return the cache locations
-    val cached = getCacheLocs(rdd)(partition)
+    val cached = getCacheLocs(rdd)(idx)
     if (cached.nonEmpty) {
       return cached
     }
+
+    val realPart = stageIdToPartitions(stageId)(idx)
+
     // If the RDD has some placement preferences (as is the case for input RDDs), get those
-    val rddPrefs = rdd.preferredLocations(rdd.partitions(partition)).toList
+    val rddPrefs = rdd.preferredLocations(realPart).toList
     if (rddPrefs.nonEmpty) {
       return rddPrefs.map(TaskLocation(_))
     }
@@ -970,8 +989,9 @@ class StageScheduler(
     // but this will do for now.
     rdd.dependencies.foreach {
       case n: NarrowDependency[_] =>
-        for (inPart <- n.getParents(partition)) {
-          val locs = getPreferredLocsInternal(n.rdd, inPart, visited)
+        for (inPart <- n.getParents(realPart.index)) {
+          val inPartIndex = stagePartIdToIndex(stageId)(inPart)
+          val locs = getPreferredLocsInternal(stageId, n.rdd, inPartIndex, visited)
           if (locs != Nil) {
             return locs
           }

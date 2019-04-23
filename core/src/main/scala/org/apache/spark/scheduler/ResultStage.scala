@@ -57,7 +57,7 @@ private[spark] class ResultStage(
     _activeJob = None
   }
 
-  def isSiteAvailble(): Boolean = numFinished == calcPartitions.length
+  def isSiteAvailble(): Boolean = numFinished == calcPartIds.length
 
   // TODO-lzp: 关于如何移除一个ResultTask的结果, 对于ShuffleMapTask, 当FetchedFailed发生时会移除
 
@@ -79,9 +79,9 @@ private[spark] class ResultStage(
    * This can only be called when there is an active job.
    */
   override def findMissingPartitions(): Seq[Int] = {
-    val missing = calcPartitions.indices.filter(id => partResults(id).isEmpty)
-    assert(missing.size == calcPartitions.length - numFinished,
-      s"${missing.size} missing, expected ${calcPartitions.length - numFinished}")
+    val missing = calcPartIds.indices.filter(id => partResults(id).isEmpty)
+    assert(missing.size == calcPartIds.length - numFinished,
+      s"${missing.size} missing, expected ${calcPartIds.length - numFinished}")
     missing
   }
 

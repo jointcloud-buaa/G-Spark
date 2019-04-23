@@ -125,13 +125,13 @@ private[spark] class ShuffleMapStage(
 
   // ==== 在SD中执行
 
-  def isSiteAvailable: Boolean = _numAvailableOutputs == calcPartitions.length
+  def isSiteAvailable: Boolean = _numAvailableOutputs == calcPartIds.length
 
   /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
   override def findMissingPartitions(): Seq[Int] = {
-    val missing = calcPartitions.indices.filter(id => partResults(id).isEmpty)
-    assert(missing.size == calcPartitions.length - _numAvailableOutputs,
-      s"${missing.size} missing, expected ${calcPartitions.length - _numAvailableOutputs}")
+    val missing = calcPartIds.indices.filter(id => partResults(id).isEmpty)
+    assert(missing.size == calcPartIds.length - _numAvailableOutputs,
+      s"${missing.size} missing, expected ${calcPartIds.length - _numAvailableOutputs}")
     missing
   }
 
@@ -154,7 +154,7 @@ private[spark] class ShuffleMapStage(
    */
   def removeOutputsOnExecutor(execId: String): Unit = {
     var becameUnavailable = false
-    for (idx <- calcPartitions.indices) {
+    for (idx <- calcPartIds.indices) {
       val prevList = partResults(idx)
       val newList = prevList.filterNot(_.asInstanceOf[MapStatus].location.executorId == execId)
       partResults(idx) = newList
@@ -165,7 +165,7 @@ private[spark] class ShuffleMapStage(
     }
     if (becameUnavailable) {
       logInfo("%s is now unavailable on executor %s (%d/%d, %s)".format(
-        this, execId, _numAvailableOutputs, calcPartitions.length, isSiteAvailable))
+        this, execId, _numAvailableOutputs, calcPartIds.length, isSiteAvailable))
     }
   }
 }

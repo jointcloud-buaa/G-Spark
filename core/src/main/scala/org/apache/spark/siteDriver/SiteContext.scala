@@ -418,24 +418,6 @@ private[spark] class SiteContext(
   }
 
   /**
-   * Register the given accumulator.
-   *
-   * @note Accumulators must be registered before use, or it will throw exception.
-   */
-  def register(acc: AccumulatorV2[_, _]): Unit = {
-    acc.register(this)
-  }
-
-  /**
-   * Register the given accumulator with given name.
-   *
-   * @note Accumulators must be registered before use, or it will throw exception.
-   */
-  def register(acc: AccumulatorV2[_, _], name: String): Unit = {
-    acc.register(this, name = Option(name))
-  }
-
-  /**
    * Create and register a long accumulator, which starts with 0 and accumulates inputs by `add`.
    */
   def longAccumulator: LongAccumulator = {

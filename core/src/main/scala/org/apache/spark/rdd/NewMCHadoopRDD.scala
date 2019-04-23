@@ -27,7 +27,7 @@ import scala.reflect.ClassTag
 import org.apache.hadoop.conf.{Configurable, Configuration}
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.io.Writable
-import org.apache.hadoop.mapred.JobConf
+import org.apache.hadoop.mapred.{JobConf, SplitLocationInfo}
 import org.apache.hadoop.mapreduce.{InputFormat, InputSplit, Job, JobID, TaskAttemptID, TaskType}
 import org.apache.hadoop.mapreduce.lib.input.{CombineFileSplit, FileInputFormat, FileSplit}
 import org.apache.hadoop.mapreduce.task.{JobContextImpl, TaskAttemptContextImpl}
@@ -44,8 +44,11 @@ import org.apache.spark.util.{SerializableConfiguration, ShutdownHookManager}
 private[spark] class NewMCHadoopPartition(
   rddId: Int,
   val index: Int,
-  rawSplit: InputSplit with Writable)
-  extends Partition {
+  rawSplit: InputSplit with Writable,
+  // 因为Split在序列化时可能不包含位置信息
+  val hosts: Array[String],
+  val inMemory: Array[Boolean]
+) extends Partition {
 
   val serializableHadoopSplit = new SerializableWritable(rawSplit)
 
@@ -53,8 +56,6 @@ private[spark] class NewMCHadoopPartition(
 
   override def equals(other: Any): Boolean = super.equals(other)
 }
-
-// TODO-lzp: 在之前的方式中, 会报SparkContext不能序列化的错误. 探究下为什么
 
 @DeveloperApi
 class NewMCHadoopRDD[K, V](
@@ -111,7 +112,7 @@ class NewMCHadoopRDD[K, V](
     paths.flatMap { case (clusterName, path) =>
       val host = clusterToHost(clusterName)
       val webPath = s"webhdfs://$host:14000/$path"
-      val hdfsPath = s"hdfs://$host/$path"
+      val hdfsPath = s"hdfs://$clusterName/$path"
       FileSystem.getLocal(_conf)
       val job = Job.getInstance(_conf)
       FileInputFormat.setInputPaths(job, webPath)
@@ -135,7 +136,9 @@ class NewMCHadoopRDD[K, V](
           id,
           i + startIdx,
           new FileSplit(new Path(hdfsPath), sp.getStart, sp.getLength, sp.getLocations)
-              .asInstanceOf[InputSplit with Writable]
+              .asInstanceOf[InputSplit with Writable],
+          sp.getLocations,
+          sp.getLocationInfo.map(_.isInMemory)
         )
       }
       startIdx += result.length
@@ -287,12 +290,14 @@ class NewMCHadoopRDD[K, V](
   }
 
   override def getPreferredLocations(hsplit: Partition): Seq[String] = {
-    val split = hsplit.asInstanceOf[NewMCHadoopPartition].serializableHadoopSplit.value
+    val split = hsplit.asInstanceOf[NewMCHadoopPartition]
     val locs = HadoopRDD.SPLIT_INFO_REFLECTIONS match {
       case Some(c) =>
         try {
-          val infos = c.newGetLocationInfo.invoke(split).asInstanceOf[Array[AnyRef]]
-          HadoopRDD.convertSplitLocationInfo(infos)
+//          val infos = c.newGetLocationInfo.invoke(split).asInstanceOf[Array[AnyRef]]
+          val infos = split.hosts.zip(split.inMemory).map{ case (h, m) =>
+            new SplitLocationInfo(h, m)}
+          HadoopRDD.convertSplitLocationInfo(infos.map(_.asInstanceOf[AnyRef]))
         } catch {
           case e : Exception =>
             logDebug("Failed to use InputSplit#getLocationInfo.", e)
@@ -300,7 +305,7 @@ class NewMCHadoopRDD[K, V](
         }
       case None => None
     }
-    locs.getOrElse(split.getLocations.filter(_ != "localhost"))
+    locs.getOrElse(split.hosts.filter(_ != "localhost"))
   }
 
   override def getDataDist(part: Int): Map[String, Long] = dataDistState(part)

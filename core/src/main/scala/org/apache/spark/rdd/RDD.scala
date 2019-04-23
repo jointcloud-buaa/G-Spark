@@ -228,6 +228,9 @@ abstract class RDD[T: ClassTag](
   private var dependencies_ : Seq[Dependency[_]] = null
   @transient private var partitions_ : Array[Partition] = null
 
+  // 记录分片的总数，随RDD被序列化
+  private var _numSplits: Int = 0
+
   /** An Option holding our checkpoint RDD, if we are checkpointed */
   private def checkpointRDD: Option[CheckpointRDD[T]] = checkpointData.flatMap(_.checkpointRDD)
 
@@ -252,6 +255,7 @@ abstract class RDD[T: ClassTag](
     checkpointRDD.map(_.partitions).getOrElse {
       if (partitions_ == null) {
         partitions_ = getPartitions
+        _numSplits = partitions_.length
         partitions_.zipWithIndex.foreach { case (partition, index) =>
           require(partition.index == index,
             s"partitions($index).partition == ${partition.index}, but it should equal $index")
@@ -260,6 +264,8 @@ abstract class RDD[T: ClassTag](
       partitions_
     }
   }
+
+  final def numSplits: Int = _numSplits
 
   /**
    * Returns the number of partitions of this RDD.

@@ -92,7 +92,8 @@ private[spark] object StageInfo {
       stage.name,
       numTasks.getOrElse(stage.numTasks),
       rddInfos,
-      stage.parents.map(_.id),
+      Seq.empty[Int],
+//      stage.parents.map(_.id),  // 没有parents， 其没有被序列化
       stage.details,
       taskMetrics,
       taskLocalityPreferences)

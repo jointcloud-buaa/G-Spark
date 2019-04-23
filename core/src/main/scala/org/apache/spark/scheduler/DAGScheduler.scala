@@ -970,7 +970,7 @@ class DAGScheduler(
       }
     } catch {
       case NonFatal(e) =>
-        stage.makeNewStageAttempt(partitionsToCompute.size)
+        stage.makeNewStageAttempt(sc, partitionsToCompute.size)
         listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
         abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
@@ -992,22 +992,23 @@ class DAGScheduler(
     bwDistState: NetworkDistState,
     properties: Properties
   ): Seq[StageDescription] = {
-    val allPartitions: Seq[Int] = stage match {
+    val allPartitions = stage.rdd.partitions
+    val needHandlePartIds: Seq[Int] = stage match {
       case s: ShuffleMapStage =>
-        0 until s.numPartitions
+        0 until s.numPartitions  // shuffleMapStage是要计算所有分区的
       case r: ResultStage =>
-        r.partitions.toSeq
+        r.partitions.toSeq    // resultStage则只计算指定分区
     }
 
     // TODO-lzp: 如何没有启动SiteDriver呢？？
     val allHosts = clusterToHost.values.toArray
-    val hostToParts = MMap.empty[String, ArrayBuffer[Int]]
+    val hostToParts = MMap.empty[String, ArrayBuffer[Partition]]
     if (allHosts.length == 1) {
-      hostToParts(allHosts(0)) = ArrayBuffer(allPartitions: _*)
+      hostToParts(allHosts(0)) = ArrayBuffer(needHandlePartIds.map(id => allPartitions(id)): _*)
     } else {
-      for (part <- allPartitions) {
+      for (partId <- needHandlePartIds) {
         // TODO-lzp: 这里有没有可能为空
-        val dataDist = dataDistState(part)
+        val dataDist = dataDistState(partId)
         val timeToCluster: Array[(Double, String)] = allHosts.map { runHost =>
           // 这里直接忽略了, 数据在集群本地的情况, 只考虑从别的集群拉数据
           val costT = allHosts.withFilter(_ != runHost).map { othHost =>
@@ -1024,7 +1025,7 @@ class DAGScheduler(
         // TODO-lzp: 如何时间都相差不大, 这时候简单的取min似乎意义不大
         val bestHost = timeToCluster.minBy(_._1)._2
         if (!hostToParts.contains(bestHost)) hostToParts(bestHost) = ArrayBuffer.empty
-        hostToParts(bestHost) += part
+        hostToParts(bestHost) += allPartitions(partId)
       }
     }
 
@@ -1038,8 +1039,8 @@ class DAGScheduler(
 
   // TODO-lzp: 从GM处获取带宽测量数据
   def getBandwitchDist(): NetworkDistState = {
-//    val tmp = Map("act-33-36" -> 0, "act-37-41" -> 1, "act-42-46" -> 2)
-    val tmp = Map("act-37-41" -> 0)
+    val tmp = Map("act-33-36" -> 0, "act-37-41" -> 1, "act-42-46" -> 2)
+//    val tmp = Map("act-37-41" -> 0)
     NetworkDistState.const(
       tmp.map{ case (cluster, idx) => (clusterToHost(cluster), idx)},
       1000,
@@ -1105,8 +1106,9 @@ class DAGScheduler(
           case rs: ResultStage =>
             rs.activeJob match {
               case Some(job) =>
-                parts.indices.foreach { idx =>
-                  job.finished(idx) = true
+                parts.zipWithIndex.foreach { case (partId, idx) =>
+                  val partIndex = job.partIdToIndex(partId)
+                  job.finished(partIndex) = true
                   job.numFinished += 1
                   if (job.numFinished == job.numPartitions) {
                     markStageAsFinished(rs)
@@ -1116,7 +1118,7 @@ class DAGScheduler(
                     )
                   }
                   try {
-                    job.listener.taskSucceeded(idx, results(idx))
+                    job.listener.taskSucceeded(partIndex, results(idx))
                   } catch {
                     case e: Exception =>
                       // TODO: Perhaps we want to mark the resultStage as failed?

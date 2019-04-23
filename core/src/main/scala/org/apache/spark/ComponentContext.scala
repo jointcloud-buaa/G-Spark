@@ -17,9 +17,29 @@
 
 package org.apache.spark
 
+import org.apache.spark.util.AccumulatorV2
+
 trait ComponentContext {
   def conf: SparkConf
   def stop(): Unit
   def stopInNewThread(): Unit
   protected[spark] def cleaner: Option[ContextCleaner]
+
+  /**
+   * Register the given accumulator.
+   *
+   * @note Accumulators must be registered before use, or it will throw exception.
+   */
+  def register(acc: AccumulatorV2[_, _]): Unit = {
+    acc.register(this)
+  }
+
+  /**
+   * Register the given accumulator with given name.
+   *
+   * @note Accumulators must be registered before use, or it will throw exception.
+   */
+  def register(acc: AccumulatorV2[_, _], name: String): Unit = {
+    acc.register(this, name = Option(name))
+  }
 }

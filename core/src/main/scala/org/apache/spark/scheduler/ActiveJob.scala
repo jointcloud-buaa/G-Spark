@@ -56,6 +56,14 @@ private[spark] class ActiveJob(
     case m: ShuffleMapStage => m.rdd.partitions.length
   }
 
+  val partIdToIndex: Int => Int = partId => finalStage match {
+    case r: ResultStage =>
+      val a = r.partitions.zipWithIndex.toMap
+      a(partId)
+    case m: ShuffleMapStage =>
+      partId
+  }
+
   /** Which partitions of the stage have finished */
   val finished = Array.fill[Boolean](numPartitions)(false)
 

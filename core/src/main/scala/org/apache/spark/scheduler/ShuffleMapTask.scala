@@ -56,7 +56,7 @@ private[spark] class ShuffleMapTask(
     taskBinary: Broadcast[Array[Byte]],
     partition: Partition,
     @transient private var locs: Seq[TaskLocation],
-  val outputId: Int,
+  val outputId: Int,  // 用来索引Stage中的calcPartIds和partResults
     metrics: TaskMetrics,
     localProperties: Properties,
     jobId: Option[Int] = None,
