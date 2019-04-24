@@ -301,10 +301,9 @@ object SparkEnv extends Logging {
     val serializerManager = new SerializerManager(serializer, conf, ioEncryptionKey)
     val closureSerializer = new JavaSerializer(conf)
 
-    // TODO-IMP: 此处的1st参数, 至少在当前实现中, 没有用
+    // 此处的1st参数, 至少在当前实现中, 没有用
     val broadcastManager = new BroadcastManager(true, conf, securityManager)
 
-    // TODO-lzp: 这里至少应该设置MapOutputTrackerSiteMaster
     val mapOutputTracker = new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
     mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
       MapOutputTracker.ENDPOINT_NAME,
@@ -339,7 +338,6 @@ object SparkEnv extends Logging {
     )
     val blockManagerMasterRef = rpcEnv.setupEndpoint(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
-      // TODO-lzp: None, 这里要考虑是否要在SiteDriver上启动ListenerBus
       new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, Some(listenerBus))
     )
     val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
@@ -348,7 +346,6 @@ object SparkEnv extends Logging {
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numCores)
 
-    // TODO-lzp: 待进一步确定
     conf.set("spark.executor.id", execId)
     val metricsSystem = MetricsSystem.createMetricsSystem("siteDriver", conf, securityManager)
     metricsSystem.start()
@@ -377,11 +374,7 @@ object SparkEnv extends Logging {
       Some(outputCommitCoordinator),
       conf)
 
-    // TODO-lzp: 设置目录, 用于存放通过SparkContext#addFile()添加的文件, 不确定
-    val sparkFilesDir = Utils.createTempDir(Utils.getLocalDir(conf), "userFiles").getAbsolutePath
-    envInstance.driverTmpDir = Some(sparkFilesDir)
-
-    // TODO-lzp: 不确定是否在此处设置
+    // 设置后可能通过SparkEnv.get来获取, 虽然总是能通过ssc.env来获取的
     SparkEnv.set(envInstance)
     envInstance
   }
@@ -433,7 +426,6 @@ object SparkEnv extends Logging {
       conf.getInt("spark.siteDriver.port", 7077),
       rpcEnv
     )
-    logInfo(s"##lizp##: mapOutputTracker's trackerEndpoint is ${mapOutputTracker.trackerEndpoint}")
 
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
@@ -458,8 +450,6 @@ object SparkEnv extends Logging {
       conf.getInt("spark.siteDriver.port", 7077),
       rpcEnv
     )
-    logInfo(s"##lizp##: blockManagerMasterRef is $blockManagerMasterRef")
-    // TODO-lzp: about the isDriver
     val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,

@@ -169,6 +169,7 @@ class BlockManagerMasterEndpoint(
     )
   }
 
+  // TODO-lzp: 原则上，此处应该是在GD中，消息也是发送给SD的slaveRef而非masterRef
   private def removeShuffle(shuffleId: Int): Future[Seq[Boolean]] = {
     // Nothing to do in the BlockManagerMasterEndpoint data structures
     val removeMsg = RemoveShuffle(shuffleId)
@@ -335,7 +336,6 @@ class BlockManagerMasterEndpoint(
       idWithoutTopologyInfo: BlockManagerId,
       maxMemSize: Long,
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
-    logInfo(s"##lizp##: $idWithoutTopologyInfo, $maxMemSize, $slaveEndpoint")
 
     // the dummy id is not expected to contain the topology information.
     // we get that info here and respond back with a more fleshed out block manager id

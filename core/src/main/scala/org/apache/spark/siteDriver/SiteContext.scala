@@ -91,7 +91,7 @@ private[spark] class SiteContext(
 
   def getConf: SparkConf = conf.clone
 
-  private[spark] def env: SparkEnv = _env
+  override def env: SparkEnv = _env
 
   private[spark] def taskScheduler: TaskScheduler = _taskScheduler
 
@@ -240,17 +240,14 @@ private[spark] class SiteContext(
         None
       }
 
-    // TODO-lzp: 涉及到BlockManager的修改
     env.blockManager.initialize(_siteAppId)
 
-    // TODO-lzp: 传递给ContextCleaner的Context还略微有些麻烦
-//    _cleaner =
-//      if (_conf.getBoolean("spark.cleaner.referenceTracking", true)) {
-//        Some(new ContextCleaner(this))
-//      } else {
-//        None
-//      }
-    _cleaner = None
+    _cleaner =
+      if (_conf.getBoolean("spark.cleaner.referenceTracking", true)) {
+        Some(new ContextCleaner(this))
+      } else {
+        None
+      }
     _cleaner.foreach(_.start())
 
     //    env.metricsSystem.start()

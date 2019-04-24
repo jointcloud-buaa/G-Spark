@@ -17,13 +17,24 @@
 
 package org.apache.spark
 
+import org.apache.hadoop.conf.Configuration
+
 import org.apache.spark.util.AccumulatorV2
 
 trait ComponentContext {
   def conf: SparkConf
+  def env: SparkEnv
   def stop(): Unit
   def stopInNewThread(): Unit
   protected[spark] def cleaner: Option[ContextCleaner]
+
+  def hadoopConfiguration: Configuration
+
+  private[spark] var checkpointDir: Option[String] = None
+
+  // 因为RDD是在SparkContext中注册的，因此在退出时会在SparkContext's cleaner中清除
+  // SiteContext什么也不需要做
+  def unpersistRDD(rddId: Int, blocking: Boolean = true): Unit = {}
 
   /**
    * Register the given accumulator.

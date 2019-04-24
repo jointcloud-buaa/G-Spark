@@ -257,7 +257,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     SparkEnv.createGlobalDriverEnv(conf, isLocal, listenerBus, SparkContext.numDriverCores(master))
   }
 
-  private[spark] def env: SparkEnv = _env
+  override def env: SparkEnv = _env
 
   // Used to store a URL for each static file/jar together with the file's local timestamp
   private[spark] val addedFiles = new ConcurrentHashMap[String, Long]().asScala
@@ -284,7 +284,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
    * @note As it will be reused in all Hadoop RDDs, it's better not to modify it unless you
    * plan to set some global configurations for all Hadoop RDDs.
    */
-  def hadoopConfiguration: Configuration = _hadoopConfiguration
+  override def hadoopConfiguration: Configuration = _hadoopConfiguration
 
   private[spark] def executorMemory: Int = _executorMemory
 
@@ -320,8 +320,6 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     _executorAllocationManager
 
   override def cleaner: Option[ContextCleaner] = _cleaner
-
-  private[spark] var checkpointDir: Option[String] = None
 
   // Thread Local variable that can be used by users to pass information down the stack
   protected[spark] val localProperties = new InheritableThreadLocal[Properties] {
@@ -1664,7 +1662,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   /**
    * Unpersist an RDD from memory and/or disk storage
    */
-  private[spark] def unpersistRDD(rddId: Int, blocking: Boolean = true) {
+  override def unpersistRDD(rddId: Int, blocking: Boolean = true) {
     env.blockManager.master.removeRdd(rddId, blocking)
     persistentRdds.remove(rddId)
     listenerBus.post(SparkListenerUnpersistRDD(rddId))

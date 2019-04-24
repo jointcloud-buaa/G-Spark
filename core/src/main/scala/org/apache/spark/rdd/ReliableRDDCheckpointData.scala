@@ -73,12 +73,12 @@ private[spark] class ReliableRDDCheckpointData[T: ClassTag](@transient private v
 private[spark] object ReliableRDDCheckpointData extends Logging {
 
   /** Return the path of the directory to which this RDD's checkpoint data is written. */
-  def checkpointPath(sc: SparkContext, rddId: Int): Option[Path] = {
+  def checkpointPath(sc: ComponentContext, rddId: Int): Option[Path] = {
     sc.checkpointDir.map { dir => new Path(dir, s"rdd-$rddId") }
   }
 
   /** Clean up the files associated with the checkpoint data for this RDD. */
-  def cleanCheckpoint(sc: SparkContext, rddId: Int): Unit = {
+  def cleanCheckpoint(sc: ComponentContext, rddId: Int): Unit = {
     checkpointPath(sc, rddId).foreach { path =>
       path.getFileSystem(sc.hadoopConfiguration).delete(path, true)
     }
