@@ -210,6 +210,40 @@ class DAGScheduler(
     backend.start()
   }
 
+  /**
+   * 获取某个分区的数据分布, 键为主机名, 值为数据大小, 会递归调用所有的父RDD关联子分区的数据分布
+   *
+   * 注: 这里其实有个隐含的强约束, 即一个Stage的某个task, 其所计算的分区的所有父分区都必须在此集群上.
+   *
+   * TODO-lzp: 如何处理一个父分区有两个子分区, 此处不是指shuffle的意思, 而是当一个父分区的全部数据
+   * 分别全部属于不同子分区时, 会产生什么影响, 毕竟, 求不同子分区的数据分布时, 会把从这个父分区开始的
+   * 所有父分区的数据分布重新计算, 原则上, 应该尽量保证此父分区的所有子分区在一个集群内. 如cartesian,
+   * 求两个RDD的笛卡尔积时.
+   *
+   * @param rdd 求分区数据分布的RDD
+   * @param split 指定分区
+   * @param rst 结果
+   */
+  private def getDataDist(rdd: RDD[_], split: Int, rst: MMap[String, Long]): Unit = {
+    // TODO-lzp: 加入对persistRDD的支持
+    if (rdd.dependencies.isEmpty) {  // 数据类RDD, 无依赖, 则其本质提供数据分布信息
+      for ((k, v) <- rdd.dataDist(split)) {
+        rst(k) = rst.getOrElse[Long](k, 0) + v
+      }
+    } else {
+      rdd.dependencies.foreach {
+        case sdep: ShuffleDependency[_, _, _] =>  // shuffle依赖, 通过mapOutputTracker提供
+          // 需要声明的是, MapOutputTracker的MapStatus保存的size并非精确的值
+          for ((k, v) <- mapOutputTracker.getDataDist(sdep, split)) {
+            rst(k) = rst.getOrElse[Long](k, 0) + v
+          }
+        case ndep: NarrowDependency[_] =>  // 窄依赖, 则获取子分区的所有父分区
+          ndep.getParents(split).foreach { psplit =>
+            getDataDist(ndep.rdd, psplit, rst)
+          }
+      }
+    }
+  }
 
   // TODO-lzp: 是要收集所有集群的所有执行器的核心数, 还是怎么做
 //  def defaultParallelism(): Int = backend.defaultParallelism()
@@ -956,16 +990,21 @@ class DAGScheduler(
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 
     val partitionsToCompute: Seq[Int] = stage.findGlobalMissingPartitions()
+    val rst = MMap.empty[String, Long]
     val taskIdToDataDist: Map[Int, Map[String, Long]] = try {
       stage match {
         case s: ShuffleMapStage =>
           partitionsToCompute.map { id =>
-            (id, getDataDist(stage.rdd, id))
+            rst.clear()
+            getDataDist(stage.rdd, id, rst)
+            (id, rst)
           }.toMap
         case s: ResultStage =>
           partitionsToCompute.map { id =>
             val p = s.partitions(id)
-            (id, getDataDist(stage.rdd, p))
+            rst.clear()
+            getDataDist(stage.rdd, p, rst)
+            (id, rst)
           }.toMap
       }
     } catch {
@@ -1053,44 +1092,6 @@ class DAGScheduler(
       1000,
       0
     )
-  }
-
-  // TODO-lzp: 获取数据分布
-  def getDataDist(rdd: RDD[_], part: Int): Map[String, Long] = {
-    getDataDistInternal(rdd, part, new HashSet)
-  }
-
-  private def getDataDistInternal(
-    rdd: RDD[_], part: Int, visited: HashSet[(RDD[_], Int)]): Map[String, Long] = {
-    if (!visited.add((rdd, part))) {
-      return Map.empty
-    }
-
-    // TODO-lzp: 如何考虑persist的缓存
-//    val cached = getCacheLocs(rdd)(part)   // 获取指定分区的位置集 Seq[Location]
-//    if (cached.nonEmpty) {
-//      return cached
-//    }
-    val rddDataDist = rdd.dataDist(part)
-    if (rddDataDist.nonEmpty) return rddDataDist
-
-    rdd.dependencies.foreach {
-      // TODO-lzp: 当有多个父分区时, 不确定要如何做, 以及要不要给RDD加入集群感知
-      case n: NarrowDependency[_] =>
-        val rst = MMap.empty[String, Long]
-        for (inPart <- n.getParents(part)) {
-          val locs = getDataDistInternal(n.rdd, inPart, visited)
-          if (locs.nonEmpty) {
-            locs.foreach { case (k, v) =>
-              rst(k) = rst.getOrElse[Long](k, 0) + v
-            }
-          }
-        }
-        return rst
-      case _ =>
-    }
-
-    Map.empty[String, Long]
   }
 
   // TODO-lzp: 处理site driver lost

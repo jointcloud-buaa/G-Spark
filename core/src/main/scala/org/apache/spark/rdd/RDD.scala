@@ -283,8 +283,9 @@ abstract class RDD[T: ClassTag](
     }
   }
 
-  // TODO-lzp: 加入checkpointRDD的操作
-  final def dataDist(part: Int): Map[String, Long] = getDataDist(part)
+  final def dataDist(part: Int): Map[String, Long] = {
+    checkpointRDD.map(_.getDataDist(part)).getOrElse(getDataDist(part))
+  }
 
   /**
    * Internal method to this RDD; will read from cache if applicable, or otherwise compute it.
