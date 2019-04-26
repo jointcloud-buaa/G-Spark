@@ -301,6 +301,7 @@ private[spark] class BlockManager(
    * cannot be read successfully.
    */
   override def getBlockData(blockId: BlockId): ManagedBuffer = {
+    // TODO-lzp: 加入关于RemoteShuffleBlockId的识别, 用于获取数据
     if (blockId.isShuffle) {
       shuffleManager.shuffleBlockResolver.getBlockData(blockId.asInstanceOf[ShuffleBlockId])
     } else {

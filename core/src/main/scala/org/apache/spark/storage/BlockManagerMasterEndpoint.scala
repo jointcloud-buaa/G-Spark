@@ -90,6 +90,9 @@ class BlockManagerMasterEndpoint(
     case GetExecutorEndpointRef(executorId) =>
       context.reply(getExecutorEndpointRef(executorId))
 
+    case GetBlockManagerId(executorId) =>
+      context.reply(getBlockManagerId(executorId))
+
     case GetMemoryStatus =>
       context.reply(memoryStatus)
 
@@ -442,6 +445,9 @@ class BlockManagerMasterEndpoint(
       info.slaveEndpoint
     }
   }
+
+  private def getBlockManagerId(execId: String): Option[BlockManagerId] =
+    blockManagerIdByExecutor.get(execId)
 
   override def onStop(): Unit = {
     askThreadPool.shutdownNow()

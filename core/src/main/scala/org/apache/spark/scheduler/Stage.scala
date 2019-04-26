@@ -30,7 +30,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.SerializerInstance
-import org.apache.spark.siteDriver.SiteContext
+import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, CallSite, Utils}
 
 /**
@@ -164,6 +164,7 @@ private[spark] object Stage {
     jobId: Int,
     parts: Array[Partition],
     properties: Properties,
+    othBlockManagerIds: Array[BlockManagerId],
     currentFiles: mutable.Map[String, Long],
     currentJars: mutable.Map[String, Long],
     serializer: SerializerInstance)
@@ -186,18 +187,19 @@ private[spark] object Stage {
       dataOut.writeLong(timestamp)
     }
 
-    // Write the task properties separately so it is available before full task deserialization.
-    val propBytes = Utils.serialize(properties)
-    dataOut.writeInt(propBytes.length)
-    dataOut.write(propBytes)
-
     dataOut.writeInt(jobId)
 
-    dataOut.writeInt(parts.length)
     dataOut.flush()
-
     val objOut = new ObjectOutputStream(out)
-    parts.foreach(p => objOut.writeObject(p))
+
+    objOut.writeInt(othBlockManagerIds.length)
+    othBlockManagerIds.foreach(objOut.writeObject)
+
+    objOut.writeObject(properties)
+
+    objOut.writeInt(parts.length)
+    parts.foreach(objOut.writeObject)
+
     objOut.flush()
 
     // Write the task itself and finish
@@ -211,6 +213,7 @@ private[spark] object Stage {
     HashMap[String, Long],  // files
     HashMap[String, Long],  // jars
     Properties,             // properties
+    Array[BlockManagerId],
     Array[Partition],       // partitions
     Int,                    // jobId
     ByteBuffer) = {
@@ -232,21 +235,27 @@ private[spark] object Stage {
       stageJars(dataIn.readUTF()) = dataIn.readLong()
     }
 
-    val propLength = dataIn.readInt()
-    val propBytes = new Array[Byte](propLength)
-    dataIn.readFully(propBytes, 0, propLength)
-    val stageProps = Utils.deserialize[Properties](propBytes)
-
     val jobId = dataIn.readInt()
+
+    val objIn = new ObjectInputStream(in)
+
+    val blockMIdLen = objIn.readInt()
+    val blockMIds = Array.ofDim[BlockManagerId](blockMIdLen)
+    (0 until blockMIdLen).foreach { idx =>
+      blockMIds(idx) = objIn.readObject().asInstanceOf[BlockManagerId]
+    }
+
+    val stageProps = objIn.readObject().asInstanceOf[Properties]
 
     val aryLen = dataIn.readInt()
     val parts = Array.ofDim[Partition](aryLen)
-    val objIn = new ObjectInputStream(in)
-    (0 until aryLen).foreach(idx => parts(idx) = objIn.readObject().asInstanceOf[Partition])
+    (0 until aryLen).foreach { idx =>
+      parts(idx) = objIn.readObject().asInstanceOf[Partition]
+    }
 
     // Create a sub-buffer for the rest of the data, which is the serialized Task object
     val subBuffer = serializedStage.slice()  // ByteBufferInputStream will have read just up to task
-    (stageFiles, stageJars, stageProps, parts, jobId, subBuffer)
+    (stageFiles, stageJars, stageProps, blockMIds, parts, jobId, subBuffer)
   }
 
   def serializeStageResult(

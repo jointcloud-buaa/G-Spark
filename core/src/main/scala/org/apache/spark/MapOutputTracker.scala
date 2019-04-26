@@ -53,7 +53,7 @@ private[spark] class MapOutputTrackerMasterEndpoint(
     case GetMapOutputStatuses(shuffleId: Int) =>
       val hostPort = context.senderAddress.hostPort
       logInfo("Asked to send map output locations for shuffle " + shuffleId + " to " + hostPort)
-      val mapOutputStatuses = tracker.post(new GetMapOutputMessage(shuffleId, context))
+      tracker.post(GetMapOutputMessage(shuffleId, context))
 
     case StopMapOutputTracker =>
       logInfo("MapOutputTrackerMasterEndpoint stopped!")
@@ -378,11 +378,6 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   private val minSizeForBroadcast =
     conf.getSizeAsBytes("spark.shuffle.mapOutput.minSizeForBroadcast", "512k").toInt
 
-
-
-
-
-
   // HashMaps for storing mapStatuses and cached serialized statuses in the driver.
   // Statuses are dropped only by explicit de-registering.
   protected val mapStatuses = new ConcurrentHashMap[Int, Array[MapStatus]]().asScala
@@ -643,7 +638,7 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
   def getMapSizesByExecutorId(shuffleId: Int, startPartition: Int, endPartition: Int)
   : Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
     logDebug(s"Fetching outputs for shuffle $shuffleId, partitions $startPartition-$endPartition")
-    val statuses = getStatuses(shuffleId)
+    val statuses = getStatuses(shuffleId)  // 获取跟此shuffleId相关的在集群本地的map输出位置信息
     // Synchronize on the returned array because, on the driver, it gets mutated in place
     statuses.synchronized {
       return MapOutputTracker.convertMapStatuses(shuffleId, startPartition, endPartition, statuses)
@@ -746,6 +741,7 @@ private[spark] object MapOutputTracker extends Logging {
       statuses: Array[MapStatus]): Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
     assert (statuses != null)
     val splitsByAddress = new HashMap[BlockManagerId, ArrayBuffer[(BlockId, Long)]]
+    // TODO-lzp: 这里可能有问题，因为statuses只是这个集群上的map的数据, 及如何把相应的mapId也传递过来
     for ((status, mapId) <- statuses.zipWithIndex) {
       if (status == null) {
         val errorMessage = s"Missing an output location for shuffle $shuffleId"

@@ -94,6 +94,8 @@ private[spark] object BlockManagerMessages {
 
   case class GetExecutorEndpointRef(executorId: String) extends ToBlockManagerMaster
 
+  case class GetBlockManagerId(execId: String) extends ToBlockManagerMaster
+
   case class RemoveExecutor(execId: String) extends ToBlockManagerMaster
 
   case class RemoveSiteDriver(sdriverId: String) extends ToBlockManagerMaster

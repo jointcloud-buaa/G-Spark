@@ -38,6 +38,7 @@ sealed abstract class BlockId {
   def asRDDId: Option[RDDBlockId] = if (isRDD) Some(asInstanceOf[RDDBlockId]) else None
   def isRDD: Boolean = isInstanceOf[RDDBlockId]
   def isShuffle: Boolean = isInstanceOf[ShuffleBlockId]
+  def isRemoteShuffle: Boolean = isInstanceOf[RemoteShuffleBlockId]
   def isBroadcast: Boolean = isInstanceOf[BroadcastBlockId]
 
   override def toString: String = name
@@ -58,6 +59,11 @@ case class RDDBlockId(rddId: Int, splitIndex: Int) extends BlockId {
 @DeveloperApi
 case class ShuffleBlockId(shuffleId: Int, mapId: Int, reduceId: Int) extends BlockId {
   override def name: String = "shuffle_" + shuffleId + "_" + mapId + "_" + reduceId
+}
+
+@DeveloperApi
+case class RemoteShuffleBlockId(shuffleId: Int, reduceId: Int) extends BlockId {
+  override def name: String = s"remote_shuffle_${shuffleId}_$reduceId"
 }
 
 @DeveloperApi
@@ -103,6 +109,7 @@ private[spark] case class TestBlockId(id: String) extends BlockId {
 @DeveloperApi
 object BlockId {
   val RDD = "rdd_([0-9]+)_([0-9]+)".r
+  val REMOTE_SHUFFLE = "remote_shuffle_([0-9]+)_([0-9]+)".r
   val SHUFFLE = "shuffle_([0-9]+)_([0-9]+)_([0-9]+)".r
   val SHUFFLE_DATA = "shuffle_([0-9]+)_([0-9]+)_([0-9]+).data".r
   val SHUFFLE_INDEX = "shuffle_([0-9]+)_([0-9]+)_([0-9]+).index".r
@@ -115,6 +122,8 @@ object BlockId {
   def apply(id: String): BlockId = id match {
     case RDD(rddId, splitIndex) =>
       RDDBlockId(rddId.toInt, splitIndex.toInt)
+    case REMOTE_SHUFFLE(shuffleId, reduceId) =>
+      RemoteShuffleBlockId(shuffleId.toInt, reduceId.toInt)
     case SHUFFLE(shuffleId, mapId, reduceId) =>
       ShuffleBlockId(shuffleId.toInt, mapId.toInt, reduceId.toInt)
     case SHUFFLE_DATA(shuffleId, mapId, reduceId) =>

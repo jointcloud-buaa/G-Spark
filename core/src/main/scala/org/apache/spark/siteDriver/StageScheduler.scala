@@ -17,13 +17,14 @@
 
 package org.apache.spark.siteDriver
 
-import java.io.{File, NotSerializableException}
+import java.io.{File, IOException, NotSerializableException}
 import java.nio.ByteBuffer
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 
+import scala.annotation.tailrec
 import scala.collection.{mutable, Map}
-import scala.collection.mutable.{HashMap, HashSet, Stack}
+import scala.collection.mutable.{HashMap, HashSet, Map => MMap}
 import scala.concurrent.duration._
 import scala.language.existentials
 import scala.language.postfixOps
@@ -87,6 +88,8 @@ class StageScheduler(
   private[siteDriver] val failedStages = new HashSet[Stage]
   private[siteDriver] val shuffleIdToMapStage = new HashMap[Int, ShuffleMapStage]
 
+  private val stageDataAggregateReady: MMap[Int, MMap[Int, (Boolean, Long)]] = MMap.empty
+
   // Application dependencies (added through SparkContext) that we've fetched so far on this node.
   // Each map holds the master's timestamp for the version of that file or JAR we got.
   // 表示获取的依赖
@@ -126,6 +129,7 @@ class StageScheduler(
   private val messageScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("dag-scheduler-message")
 
+
   private[siteDriver] val eventProcessLoop = new StageSchedulerEventProcessLoop(this)
   taskScheduler.setStageScheduler(this)
 
@@ -161,6 +165,16 @@ class StageScheduler(
     eventProcessLoop.post(BeginEvent(task, taskInfo))
   }
 
+  @tailrec
+  private def getInboundShuffleDependency(rdd: RDD[_]): Option[ShuffleDependency[_, _, _]] =
+    rdd.dependencies.headOption match {
+      case None => None
+      case Some(dep) => dep match {
+        case sdep: ShuffleDependency[_, _, _] => Some(sdep)
+        case ndep: NarrowDependency[_] => getInboundShuffleDependency(ndep.rdd)
+      }
+    }
+
   def stageSubmitted(stageDesc: StageDescription): Unit = {
     val stageId = stageDesc.stageId
     logInfo(s"stage($stageId) is submitted to StageScheduler")
@@ -169,12 +183,13 @@ class StageScheduler(
 
     Thread.currentThread.setContextClassLoader(urlClassLoader)
 
-    val (stageFiles, stageJars, stageProps, parts, jobId, stageBytes) =
+    val (stageFiles, stageJars, stageProps, blockMIds, parts, jobId, stageBytes) =
       Stage.deserializeWithDependencies(stageDesc.serializedStage)
     stageIdToProperties(stageId) = stageProps
 
     updateDependencies(stageFiles, stageJars)
 
+    // 这里才是真正的stage
     val stage = closureSerializer.deserialize[Stage](
       stageBytes, Thread.currentThread.getContextClassLoader)  // 必须指定classLoader
 
@@ -182,6 +197,8 @@ class StageScheduler(
 
     stageIdToStage(stage.id) = stage
     stageIdToPartitions(stage.id) = parts
+    // 初始化
+    stageDataAggregateReady(stage.id) = MMap.empty
 
     // TODO-lzp: 递归添加， 太恶心了，代码
     rddIdToStageId(stage.rdd.id) = stage.id

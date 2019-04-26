@@ -79,11 +79,11 @@ class BlockManagerMaster(
     val updatedId = driverEndpoint.askWithRetry[BlockManagerId](
       RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint))
     logInfo(s"Registered BlockManager $updatedId for $obj")
-    // TODO-lzp: 这里有问题， 因为SiteDriver的ref为slaveEndpoint
     if (gdriverRef != null && Utils.isSDriver(execId)) {
       logInfo(s"Registering BlockManager $blockManagerId for GlobalBlockManager")
       gdriverRef.askWithRetry[BlockManagerId](
-        RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint))
+        // 注意： 这里是driverEndpoint, 也就是说GD持有的是SD的MasterEndpoint
+        RegisterBlockManager(blockManagerId, maxMemSize, driverEndpoint))
       logInfo(s"Registered BlockManager $updatedId for GlobalBlockManager")
     }
     updatedId
@@ -127,6 +127,10 @@ class BlockManagerMaster(
 
   def getExecutorEndpointRef(executorId: String): Option[RpcEndpointRef] = {
     driverEndpoint.askWithRetry[Option[RpcEndpointRef]](GetExecutorEndpointRef(executorId))
+  }
+
+  def getBlockManagerId(execId: String): Option[BlockManagerId] = {
+    driverEndpoint.askWithRetry[Option[BlockManagerId]](GetBlockManagerId(execId))
   }
 
   /**

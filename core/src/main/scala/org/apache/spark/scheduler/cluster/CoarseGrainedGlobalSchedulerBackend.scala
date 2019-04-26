@@ -349,7 +349,7 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
     } else false
   }
 
-  def hostnameToSDriverId: Map[String, String] = siteDriverDataMap.map{
+  override def hostnameToSDriverId: Map[String, String] = siteDriverDataMap.map{
     case (sdriverId, data) =>
       (data.sdriverHost, sdriverId)
     }.toMap
