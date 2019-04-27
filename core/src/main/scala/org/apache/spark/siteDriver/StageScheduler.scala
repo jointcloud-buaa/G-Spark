@@ -619,7 +619,7 @@ class StageScheduler(
             updateAccumulators(event)
             // outputId用来索引calcPartIds和partResults
             resultStage.addPartResult(rt.outputId, event.result)
-            if (resultStage.isSiteAvailble()) {
+            if (resultStage.isSiteAvailable) {
               val result = Stage.serializeStageResult(
                 resultStage.id,
                 resultStage.calcPartIds,
@@ -657,7 +657,7 @@ class StageScheduler(
               mapOutputTracker.registerMapOutputs(
                 shuffleStage.shuffleDep.shuffleId,
                 shuffleStage.calcPartIds,
-                shuffleStage.getPartResults,
+                shuffleStage.getPartResults.map(_.asInstanceOf[MapStatus]),
                 // TODO-lzp: 不是很确定是否要更改
                 changeEpoch = true)
 
@@ -665,7 +665,7 @@ class StageScheduler(
               val bmId = env.blockManager.blockManagerId
               // 这里进行了替换, 这样在GD看来, 此集群使用同一个blockManagerId
               val newMapStatuses = shuffleStage.getPartResults.map { ms =>
-                Option(ms).map(_.replaceLoc(bmId)).getOrElse(null)
+                Option(ms.asInstanceOf[MapStatus]).map(_.replaceLoc(bmId)).getOrElse(null)
               }
               val result = Stage.serializeStageResult(
                 shuffleStage.id,
@@ -815,7 +815,7 @@ class StageScheduler(
           mapOutputTracker.registerMapOutputs(
             shuffleId,
             stage.calcPartIds,
-            stage.getPartResults,
+            stage.getPartResults.map(_.asInstanceOf[MapStatus]),
             changeEpoch = true
           )
         }

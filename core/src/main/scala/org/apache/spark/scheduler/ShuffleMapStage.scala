@@ -47,9 +47,6 @@ private[spark] class ShuffleMapStage(
 
   @transient private[this] var _mapStageJobs: List[ActiveJob] = Nil
 
-  // 注意: 在GD/SD中有不同的意义, 前者表示总的可用的map输出, 后者表示在当前集群的可用的map输出
-  @transient private[this] var _numAvailableOutputs: Int = 0
-
   /**
    * List of [[MapStatus]] for each partition. The index of the array is the map partition id,
    * and each value in the array is the list of possible [[MapStatus]] for a partition
@@ -82,12 +79,12 @@ private[spark] class ShuffleMapStage(
    * When this reaches [[numPartitions]], this map stage is ready.
    * This should be kept consistent as `outputLocs.filter(!_.isEmpty).size`.
    */
-  def numAvailableOutputs: Int = _numAvailableOutputs
+  def numAvailableOutputs: Int = numFinished
 
   override def findGlobalMissingPartitions(): Seq[Int] = {
     val missing = (0 until numPartitions).filter(id => outputLocs(id).isEmpty)
-    assert(missing.size == numPartitions - _numAvailableOutputs,
-      s"${missing.size} missing, expected ${numPartitions - _numAvailableOutputs}")
+    assert(missing.size == numPartitions - numFinished,
+      s"${missing.size} missing, expected ${numPartitions - numFinished}")
     missing
   }
 
@@ -95,7 +92,7 @@ private[spark] class ShuffleMapStage(
     val prevList = outputLocs(partition)
     outputLocs(partition) = status :: prevList
     if (prevList == Nil) {
-      _numAvailableOutputs += 1
+      numFinished += 1
     }
   }
 
@@ -104,7 +101,7 @@ private[spark] class ShuffleMapStage(
     val newList = prevList.filterNot(_.location == bmAddress)
     outputLocs(partition) = newList
     if (prevList != Nil && newList == Nil) {
-      _numAvailableOutputs -= 1
+      numFinished -= 1
     }
   }
 
@@ -112,7 +109,7 @@ private[spark] class ShuffleMapStage(
    * Returns true if the map stage is ready, i.e. all partitions have shuffle outputs.
    * This should be the same as `outputLocs.contains(Nil)`.
    */
-  def isAvailable: Boolean = _numAvailableOutputs == numPartitions
+  def isAvailable: Boolean = numFinished == numPartitions
 
   /**
    * Returns an array of [[MapStatus]] (index by partition id). For each partition, the returned
@@ -124,29 +121,6 @@ private[spark] class ShuffleMapStage(
   }
 
   // ==== 在SD中执行
-
-  def isSiteAvailable: Boolean = _numAvailableOutputs == calcPartIds.length
-
-  /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
-  override def findMissingPartitions(): Seq[Int] = {
-    val missing = calcPartIds.indices.filter(id => partResults(id).isEmpty)
-    assert(missing.size == calcPartIds.length - _numAvailableOutputs,
-      s"${missing.size} missing, expected ${calcPartIds.length - _numAvailableOutputs}")
-    missing
-  }
-
-  def addPartResult(idx: Int, result: MapStatus): Unit = {
-    val prevList = partResults(idx)
-    partResults(idx) = result :: prevList
-    if (prevList == Nil) {
-      _numAvailableOutputs += 1
-    }
-  }
-
-  def getPartResults: Array[MapStatus] = {
-    partResults.map(_.headOption.orNull.asInstanceOf[MapStatus])
-  }
-
   /**
    * Removes all shuffle outputs associated with this executor. Note that this will also remove
    * outputs which are served by an external shuffle server (if one exists), as they are still
@@ -160,12 +134,12 @@ private[spark] class ShuffleMapStage(
       partResults(idx) = newList
       if (prevList != Nil && newList == Nil) {
         becameUnavailable = true
-        _numAvailableOutputs -= 1
+        numFinished -= 1
       }
     }
     if (becameUnavailable) {
       logInfo("%s is now unavailable on executor %s (%d/%d, %s)".format(
-        this, execId, _numAvailableOutputs, calcPartIds.length, isSiteAvailable))
+        this, execId, numFinished, calcPartIds.length, isSiteAvailable))
     }
   }
 }

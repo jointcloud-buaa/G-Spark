@@ -74,6 +74,9 @@ private[spark] abstract class Stage(
 
   val numPartitions: Int = rdd.partitions.length
 
+  // 注意: 对于ShuffleMapStage而言, GD/SD的numFinished有不同的含义
+  @transient protected var numFinished: Int = 0
+
   /** Set of jobs that this stage belongs to. */
   @transient val jobIds = new HashSet[Int]
 
@@ -85,6 +88,20 @@ private[spark] abstract class Stage(
   }
 
   protected var partResults: Array[List[Any]] = _
+
+  def addPartResult(idx: Int, result: Any): Unit = {
+    val prevList = partResults(idx)
+    partResults(idx) = result :: prevList
+    if (prevList == Nil) {
+      numFinished += 1
+    }
+  }
+
+  def getPartResults: Array[Any] = {
+    partResults.map(_.headOption.orNull)
+  }
+
+  def isSiteAvailable: Boolean = numFinished == _calcPartIds.length
 
   private var _calcPartIds: Array[Int] = _
 
@@ -150,9 +167,14 @@ private[spark] abstract class Stage(
   }
 
   /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
-  def findMissingPartitions(): Seq[Int]
+  def findMissingPartitions(): Seq[Int] = {
+    val missing = _calcPartIds.indices.filter(id => partResults(id).isEmpty)
+    assert(missing.size == _calcPartIds.length - numFinished,
+      s"${missing.size} missing, expected ${_calcPartIds.length - numFinished}")
+    missing
+  }
 
-  def findGlobalMissingPartitions(): Seq[Int]
+  def findGlobalMissingPartitions(): Seq[Int] = Seq.empty
 }
 
 private[spark] object Stage {
