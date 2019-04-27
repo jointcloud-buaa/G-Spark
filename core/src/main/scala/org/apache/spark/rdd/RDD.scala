@@ -226,7 +226,9 @@ abstract class RDD[T: ClassTag](
   // Our dependencies and partitions will be gotten by calling subclass's methods below, and will
   // be overwritten when we're checkpointed
   private var dependencies_ : Seq[Dependency[_]] = null
-  @transient private var partitions_ : Array[Partition] = null
+
+  // 想了想, 还是参与序列化吧, 不然有很多的不方便
+  private var partitions_ : Array[Partition] = null
 
   // 记录分片的总数，随RDD被序列化
   private var _numSplits: Int = 0

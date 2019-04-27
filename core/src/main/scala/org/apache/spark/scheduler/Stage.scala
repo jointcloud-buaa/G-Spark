@@ -162,7 +162,7 @@ private[spark] object Stage {
   def serializeWithDependencies(
     stage: Stage,
     jobId: Int,
-    parts: Array[Partition],
+    parts: Array[Int],
     properties: Properties,
     othBlockManagerIds: Array[BlockManagerId],
     currentFiles: mutable.Map[String, Long],
@@ -198,7 +198,7 @@ private[spark] object Stage {
     objOut.writeObject(properties)
 
     objOut.writeInt(parts.length)
-    parts.foreach(objOut.writeObject)
+    parts.foreach(objOut.writeInt)
 
     objOut.flush()
 
@@ -214,7 +214,7 @@ private[spark] object Stage {
     HashMap[String, Long],  // jars
     Properties,             // properties
     Array[BlockManagerId],
-    Array[Partition],       // partitions
+    Array[Int],       // partitions
     Int,                    // jobId
     ByteBuffer) = {
 
@@ -248,10 +248,7 @@ private[spark] object Stage {
     val stageProps = objIn.readObject().asInstanceOf[Properties]
 
     val aryLen = dataIn.readInt()
-    val parts = Array.ofDim[Partition](aryLen)
-    (0 until aryLen).foreach { idx =>
-      parts(idx) = objIn.readObject().asInstanceOf[Partition]
-    }
+    val parts = (0 until aryLen).map(_ => objIn.readInt()).toArray
 
     // Create a sub-buffer for the rest of the data, which is the serialized Task object
     val subBuffer = serializedStage.slice()  // ByteBufferInputStream will have read just up to task

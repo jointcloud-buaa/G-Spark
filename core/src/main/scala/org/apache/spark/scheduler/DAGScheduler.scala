@@ -996,6 +996,8 @@ class DAGScheduler(
         case s: ShuffleMapStage =>
           partitionsToCompute.map { id =>
             rst.clear()
+            // TODO-lzp: 能否压缩数据分布信息, 比如, 对于NewMCHadoopRDD来说, 其在一个集群上的所有分片大小
+            //           是相同的
             getDataDist(stage.rdd, id, rst)
             (id, rst)
           }.toMap
@@ -1031,7 +1033,6 @@ class DAGScheduler(
     bwDistState: NetworkDistState,
     properties: Properties
   ): Seq[StageDescription] = {
-    val allPartitions = stage.rdd.partitions
     val needHandlePartIds: Seq[Int] = stage match {
       case s: ShuffleMapStage =>
         0 until s.numPartitions  // shuffleMapStage是要计算所有分区的
@@ -1046,9 +1047,9 @@ class DAGScheduler(
       blockManagerMaster.getBlockManagerId(hostnameToSDriverId(h))
     }
 
-    val hostToParts = MMap.empty[String, ArrayBuffer[Partition]]
+    val hostToParts = MMap.empty[String, ArrayBuffer[Int]]
     if (allHosts.length == 1) {
-      hostToParts(allHosts(0)) = ArrayBuffer(needHandlePartIds.map(id => allPartitions(id)): _*)
+      hostToParts(allHosts(0)) = ArrayBuffer(needHandlePartIds: _*)
     } else {
       for (partId <- needHandlePartIds) {
         // TODO-lzp: 这里有没有可能为空
@@ -1069,7 +1070,7 @@ class DAGScheduler(
         // TODO-lzp: 如何时间都相差不大, 这时候简单的取min似乎意义不大
         val bestHost = timeToCluster.minBy(_._1)._2
         if (!hostToParts.contains(bestHost)) hostToParts(bestHost) = ArrayBuffer.empty
-        hostToParts(bestHost) += allPartitions(partId)
+        hostToParts(bestHost) += partId
       }
     }
 
