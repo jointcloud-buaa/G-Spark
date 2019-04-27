@@ -206,3 +206,17 @@ private[spark] object HighlyCompressedMapStatus {
     new HighlyCompressedMapStatus(loc, numNonEmptyBlocks, emptyBlocks, avgSize)
   }
 }
+
+private[spark] class SingleMapStatus(
+  blockManagerId: BlockManagerId,
+  partitionId: Int,
+  len: Long) extends MapStatus with Serializable {
+
+  override def location: BlockManagerId = blockManagerId
+
+  override def getSizeForBlock(reduceId: Int): Long =
+    if (reduceId == partitionId) len else 0
+
+  override def replaceLoc(newLoc: BlockManagerId): MapStatus =
+    new SingleMapStatus(newLoc, partitionId, len)
+}
