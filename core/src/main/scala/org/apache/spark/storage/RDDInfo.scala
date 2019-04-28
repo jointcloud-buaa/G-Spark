@@ -55,7 +55,7 @@ class RDDInfo(
 private[spark] object RDDInfo {
   def fromRdd(rdd: RDD[_]): RDDInfo = {
     val rddName = Option(rdd.name).getOrElse(Utils.getFormattedClassName(rdd))
-    val parentIds = rdd.dependencies.map(_.rdd.id)
+    val parentIds = rdd.dependencies.flatMap(dep => Option(dep.rdd).map(_.id))
     new RDDInfo(rdd.id, rddName, rdd.numSplits,
       rdd.getStorageLevel, parentIds,
       "no creation site because its transient", // rdd.creationSite.shortForm,

@@ -999,10 +999,14 @@ class DAGScheduler(
 
     val partitionsToCompute: Seq[Int] = stage match {
       case sms: ShuffleMapStage =>
-        // 若某集群的FakeStage失败了, 则表示此集群上执行的所有ShuffleMapStage的分区都失败了
-        val stageIdxs = sms.findGlobalMissingPartitions()
-        stageIdxs.flatMap(idx => stageIdToIdxWithParts(stage.id)(idx))
-      case rs: ResultStage =>
+        if (stageIdToIdxWithParts.contains(stage.id)) {  // 已经执行过了
+          // 若某集群的FakeStage失败了, 则表示此集群上执行的所有ShuffleMapStage的分区都失败了
+          val stageIdxs = sms.findGlobalMissingPartitions()
+          stageIdxs.flatMap(idx => stageIdToIdxWithParts(stage.id)(idx))
+        } else {  // 第一次执行
+          0 until stage.numPartitions
+        }
+      case rs: ResultStage =>  // 此处是对rs.partitions中分区的索引
         stage.findGlobalMissingPartitions()
     }
     val rst = MMap.empty[String, Long]
@@ -1014,14 +1018,14 @@ class DAGScheduler(
             // TODO-lzp: 能否压缩数据分布信息, 比如, 对于NewMCHadoopRDD来说, 其在一个集群上的所有分片大小
             //           是相同的
             getDataDist(stage.rdd, id, rst)
-            (id, rst)
+            (id, rst.clone)
           }.toMap
         case s: ResultStage =>
           partitionsToCompute.map { id =>
-            val p = s.partitions(id)
+            val p = s.partitions(id)  // 获取真正的分区
             rst.clear()
             getDataDist(stage.rdd, p, rst)
-            (id, rst)
+            (id, rst.clone)
           }.toMap
       }
     } catch {
@@ -1036,7 +1040,8 @@ class DAGScheduler(
     // TODO-lzp: 真实的带宽测量
     val bwDist = getBandwitchDist()
 
-    val stageDesc = buildStageDescription(jobId, stage, taskIdToDataDist, bwDist, properties)
+    val stageDesc = buildStageDescription(jobId, stage, partitionsToCompute,
+      taskIdToDataDist, bwDist, properties)
     backend.launchStages(stageDesc)
   }
 
@@ -1044,15 +1049,16 @@ class DAGScheduler(
   def buildStageDescription(
     jobId: Int,
     stage: Stage,
+    partitionsToCompute: Seq[Int],
     dataDistState: Map[Int, Map[String, Long]],  // reduceId -> host -> size
     bwDistState: NetworkDistState,
     properties: Properties
   ): Seq[StageDescription] = {
     val needHandlePartIds: Seq[Int] = stage match {
       case s: ShuffleMapStage =>
-        0 until s.numPartitions  // shuffleMapStage是要计算所有分区的
-      case r: ResultStage =>
-        r.partitions.toSeq    // resultStage则只计算指定分区
+        partitionsToCompute
+      case r: ResultStage =>  // 索引
+        partitionsToCompute.map(r.partitions)
     }
 
     // TODO-lzp: 如何没有启动SiteDriver呢？？
@@ -1109,10 +1115,10 @@ class DAGScheduler(
 
   // TODO-lzp: 从GM处获取带宽测量数据
   def getBandwitchDist(): NetworkDistState = {
-    val tmp = Map("act-33-36" -> 0, "act-37-41" -> 1, "act-42-46" -> 2)
-//    val tmp = Map("act-37-41" -> 0)
+//    val tmp = Array("act-37-41")
+    val tmp = Array("act-33-36", "act-37-41", "act-42-46")
     NetworkDistState.const(
-      tmp.map{ case (cluster, idx) => (clusterToHost(cluster), idx)},
+      tmp.zipWithIndex.map{ case (cluster, idx) => (clusterToHost(cluster), idx)}.toMap,
       1000,
       0
     )

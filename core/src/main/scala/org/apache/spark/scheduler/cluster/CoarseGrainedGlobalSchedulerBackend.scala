@@ -120,7 +120,7 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
           logInfo("the sub stage's result is from unknown siteDriver")
         } else {
           val (results, stageIdx, stageId) = Stage.deserializeStageResult(data.value)
-          logInfo(s"received the sub stage's(id: $stageId result from siteDriver($sdriverId)")
+          logInfo(s"received the sub stage(id: $stageId) result from siteDriver($sdriverId)")
           scheduler.subStageFinished(stageId, stageIdx, results)
         }
 

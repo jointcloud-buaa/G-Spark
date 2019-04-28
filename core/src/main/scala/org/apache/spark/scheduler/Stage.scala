@@ -209,18 +209,23 @@ private[spark] object Stage {
       dataOut.writeLong(timestamp)
     }
 
+    // jobId
     dataOut.writeInt(jobId)
+
+    // properties, TODO-lzp: 不明白为什么不能write/readObject, 反正错了
+    val propBytes = Utils.serialize(properties)
+    dataOut.writeInt(propBytes.length)
+    dataOut.write(propBytes)
+
+    // parts
+    dataOut.writeInt(parts.length)
+    parts.foreach(dataOut.writeInt)
 
     dataOut.flush()
     val objOut = new ObjectOutputStream(out)
 
     objOut.writeInt(othBlockManagerIds.length)
     othBlockManagerIds.foreach(objOut.writeObject)
-
-    objOut.writeObject(properties)
-
-    objOut.writeInt(parts.length)
-    parts.foreach(objOut.writeInt)
 
     objOut.flush()
 
@@ -257,7 +262,18 @@ private[spark] object Stage {
       stageJars(dataIn.readUTF()) = dataIn.readLong()
     }
 
+    // jobId
     val jobId = dataIn.readInt()
+
+    // properties
+    val propLen = dataIn.readInt()
+    val propBytes = new Array[Byte](propLen)
+    dataIn.readFully(propBytes, 0, propLen)
+    val stageProps = Utils.deserialize[Properties](propBytes)
+
+    // parts
+    val aryLen = dataIn.readInt()
+    val parts = (0 until aryLen).map(_ => dataIn.readInt()).toArray
 
     val objIn = new ObjectInputStream(in)
 
@@ -266,11 +282,6 @@ private[spark] object Stage {
     (0 until blockMIdLen).foreach { idx =>
       blockMIds(idx) = objIn.readObject().asInstanceOf[BlockManagerId]
     }
-
-    val stageProps = objIn.readObject().asInstanceOf[Properties]
-
-    val aryLen = dataIn.readInt()
-    val parts = (0 until aryLen).map(_ => objIn.readInt()).toArray
 
     // Create a sub-buffer for the rest of the data, which is the serialized Task object
     val subBuffer = serializedStage.slice()  // ByteBufferInputStream will have read just up to task

@@ -18,14 +18,19 @@ package org.apache.spark.rdd
 
 import scala.reflect.ClassTag
 
-import org.apache.spark.{MapOutputTrackerMaster, Partition, ShuffleDependency, SparkEnv, TaskContext}
+import org.apache.spark.{Dependency, MapOutputTrackerMaster, Partition, ShuffleDependency, SparkEnv, TaskContext}
 
+// FakeShuffledRDD的shuffleDep中rdd是不参与序列化的, 这本来就是Spark在shuffle处切断跟上一个Stage联系的设定
+// 但是, 因为FakeShuffledRDD的shuffleDep是来自于SD中ShuffleMapStage的shuffleDep, 其经过了从GD/SD的序列化
+// 反序列化, 因此, 没有rdd. 这导致很多在dep.rdd的操作失败
 class FakeShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](
   @transient var prev: RDD[_ <: Product2[K, V]],
   shuffleDep: ShuffleDependency[K, V, C]
-) extends RDD[(K, C)](prev.context, List(shuffleDep)) {
+) extends RDD[(K, C)](prev.context, Nil) {
 
   override val partitioner = Option(shuffleDep.partitioner)
+
+  override def getDependencies: Seq[Dependency[_]] = List(shuffleDep)
 
   override def getPartitions: Array[Partition] =
     Array.tabulate[Partition](shuffleDep.partitioner.numPartitions)(

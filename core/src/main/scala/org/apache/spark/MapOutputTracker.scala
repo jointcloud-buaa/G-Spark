@@ -256,9 +256,10 @@ private[spark] trait MapOutputTrackerM extends MapOutputTracker {
    * @param partitionId map output partition that we want to read
    * @return a sequence of host names
    */
+  // 经过从GD到SD的序列化/反序列化, 所有的ShuffleDep都没办法求dep.rdd操作
   def getPreferredLocationsForShuffle(dep: ShuffleDependency[_, _, _], partitionId: Int)
   : Seq[String] = {
-    if (shuffleLocalityEnabled && dep.rdd.partitions.length < SHUFFLE_PREF_MAP_THRESHOLD &&
+    if (shuffleLocalityEnabled && dep.siteMapPartsLen < SHUFFLE_PREF_MAP_THRESHOLD &&
       dep.partitioner.numPartitions < SHUFFLE_PREF_REDUCE_THRESHOLD) {
       val blockManagerIds = getLocationsWithLargestOutputs(dep.shuffleId, partitionId,
         dep.partitioner.numPartitions, REDUCER_PREF_LOCS_FRACTION)

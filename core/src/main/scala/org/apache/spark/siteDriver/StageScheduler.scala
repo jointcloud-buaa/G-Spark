@@ -185,6 +185,7 @@ class StageScheduler(
     rdd.dependencies.foreach {
       case ndep: NarrowDependency[_] =>
         registerRDD(ndep.rdd, partitions.flatMap(ndep.getParents))
+      case _ =>
     }
   }
 
@@ -214,6 +215,8 @@ class StageScheduler(
       case sms: ShuffleMapStage =>
         // 注册fakeRDD, 不然会在submitMissingTasks中获取位置信息出错
         registerRDD(sms.fakeRDD, (0 until sms.shuffleDep.partitioner.numPartitions).toArray)
+        // 让shuffleDep知道其ShuffleMapStage的处理的分区个数
+        sms.shuffleDep.siteMapPartsLen = parts.length
       case _ =>
     }
 
@@ -389,7 +392,7 @@ class StageScheduler(
       case s: ResultStage =>
         outputCommitCoordinator.stageStart(
           stage = s.id, maxPartitionId = s.rdd.numSplits - 1)
-      // TODO-lzp: 还未想明白, FakeStage如何处理
+      case s: FakeStage => // TODO-lzp: 还未想明白, FakeStage如何处理
     }
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       partitionsToCompute.map {id => (id, getPreferredLocs(stage.rdd, stage.calcPartIds(id)))}.toMap
@@ -668,12 +671,6 @@ class StageScheduler(
                 changeEpoch = true)
               clearCacheLocs()
 
-              // TODO-lzp: 要确保shuffleMapStage已经全部成功, 才能开始fakeStage
-              val fakeStage = createFakeStage(shuffleStage)
-              fakeStage.init((0 until fakeStage.numPartitions).toArray)
-              submitMissingTasks(fakeStage, stageIdToJobId(fakeStage.id),
-                stageIdToProperties(fakeStage.id))
-
               if (!shuffleStage.isSiteAvailable) {
                 // Some tasks had failed; let's resubmit this shuffleStage
                 // TODO: Lower-level scheduler should also deal with this
@@ -692,7 +689,13 @@ class StageScheduler(
 //                    markMapStageJobAsFinished(job, stats)
 //                  }
 //                }
-                submitWaitingStages(shuffleStage)
+                // TODO-lzp: 要确保shuffleMapStage已经全部成功, 才能开始fakeStage
+                val fakeStage = createFakeStage(shuffleStage)
+                // 这里完成了对之前ShuffleMapStage的替换, 因为在taskCompletion时需要再获取Stage
+                stageIdToStage(fakeStage.id) = fakeStage
+                fakeStage.init((0 until fakeStage.numPartitions).toArray)
+                submitMissingTasks(fakeStage, stageIdToJobId(fakeStage.id),
+                  stageIdToProperties(fakeStage.id))
               }
             }
 
