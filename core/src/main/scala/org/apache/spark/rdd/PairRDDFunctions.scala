@@ -55,6 +55,9 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     (implicit kt: ClassTag[K], vt: ClassTag[V], ord: Ordering[K] = null)
   extends Logging with Serializable {
 
+  def fake[C: ClassTag](sdep: ShuffleDependency[K, V, C]): RDD[(K, C)] =
+    new FakeShuffledRDD[K, V, C](self, sdep)
+
   /**
    * :: Experimental ::
    * Generic function to combine the elements for each key using a custom set of aggregation

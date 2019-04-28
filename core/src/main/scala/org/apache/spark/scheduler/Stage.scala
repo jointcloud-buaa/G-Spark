@@ -75,7 +75,7 @@ private[spark] abstract class Stage(
   val numPartitions: Int = rdd.partitions.length
 
   // 注意: 对于ShuffleMapStage而言, GD/SD的numFinished有不同的含义
-  @transient protected var numFinished: Int = 0
+  @transient var numFinished: Int = 0
 
   /** Set of jobs that this stage belongs to. */
   @transient val jobIds = new HashSet[Int]
@@ -279,16 +279,14 @@ private[spark] object Stage {
 
   def serializeStageResult(
     stageId: Int,
-    parts: Array[Int],
+    stageIdx: Int,
     results: Array[_]
   ): ByteBuffer = {
     val out = new ByteBufferOutputStream(4096)
     val dataOut = new DataOutputStream(out)
 
     dataOut.writeInt(stageId)
-
-    dataOut.writeInt(parts.length)
-    parts.foreach(dataOut.writeInt)
+    dataOut.writeInt(stageIdx)
 
     dataOut.writeInt(results.length)
     dataOut.flush()
@@ -301,20 +299,17 @@ private[spark] object Stage {
     out.toByteBuffer
   }
 
-  def deserializeStageResult(serializedResult: ByteBuffer): (Array[_], Array[Int], Int) = {
+  def deserializeStageResult(serializedResult: ByteBuffer): (Array[_], Int, Int) = {
     val in = new ByteBufferInputStream(serializedResult)
     val dataIn = new DataInputStream(in)
 
     val stageId = dataIn.readInt()
-
-    val partsLen = dataIn.readInt()
-    val parts = Array.ofDim[Int](partsLen)
-    (0 until partsLen).foreach(idx => parts(idx) = dataIn.readInt())
+    val stageIdx = dataIn.readInt()
 
     val rstLen = dataIn.readInt()
     val results = Array.ofDim[Any](rstLen)
     val objIn = new ObjectInputStream(in)
     (0 until rstLen).foreach(idx => results(idx) = objIn.readObject())
-    (results, parts, stageId)
+    (results, stageIdx, stageId)
   }
 }

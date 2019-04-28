@@ -26,6 +26,7 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Map => MMap, Sta
 import scala.concurrent.duration._
 import scala.language.existentials
 import scala.language.postfixOps
+import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
 import org.apache.commons.lang3.SerializationUtils
@@ -36,7 +37,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
-import org.apache.spark.rdd.{NewMCHadoopRDD, RDD, RDDCheckpointData, ShuffledRDD}
+import org.apache.spark.rdd.{NewMCHadoopRDD, PairRDDFunctions, RDD, RDDCheckpointData, ShuffledRDD}
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler.cluster.NetworkDistState
@@ -140,6 +141,10 @@ class DAGScheduler(
 
   private[scheduler] val jobIdToStageIds = new HashMap[Int, HashSet[Int]]
   private[scheduler] val stageIdToStage = new HashMap[Int, Stage]
+
+  // stageId -> stageIdx -> parts
+  private[scheduler] val stageIdToIdxWithParts = new HashMap[Int, Array[Array[Int]]]
+
   /**
    * Mapping from shuffle dependency ID to the ShuffleMapStage that will generate the data for
    * that dependency. Only includes stages that are part of currently running job (when the job(s)
@@ -378,12 +383,15 @@ class DAGScheduler(
    * locations that are still available from the previous shuffle to avoid unnecessarily
    * regenerating data.
    */
-  def createShuffleMapStage(shuffleDep: ShuffleDependency[_, _, _], jobId: Int): ShuffleMapStage = {
-    val rdd = shuffleDep.rdd
+  def createShuffleMapStage[K: ClassTag, V: ClassTag, C: ClassTag](
+    shuffleDep: ShuffleDependency[K, V, C], jobId: Int): ShuffleMapStage = {
+    val rdd = shuffleDep.rdd.asInstanceOf[RDD[(K, V)]]
     val numTasks = rdd.partitions.length
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
-    val stage = new ShuffleMapStage(id, rdd, numTasks, parents, jobId, rdd.creationSite, shuffleDep)
+    val fakeRDD = rdd.fake(shuffleDep)
+    val stage = new ShuffleMapStage(
+      id, rdd, numTasks, parents, jobId, rdd.creationSite, shuffleDep, fakeRDD)
 
     stageIdToStage(id) = stage
     shuffleIdToMapStage(shuffleDep.shuffleId) = stage
@@ -989,7 +997,14 @@ class DAGScheduler(
     runningStages += stage
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 
-    val partitionsToCompute: Seq[Int] = stage.findGlobalMissingPartitions()
+    val partitionsToCompute: Seq[Int] = stage match {
+      case sms: ShuffleMapStage =>
+        // 若某集群的FakeStage失败了, 则表示此集群上执行的所有ShuffleMapStage的分区都失败了
+        val stageIdxs = sms.findGlobalMissingPartitions()
+        stageIdxs.flatMap(idx => stageIdToIdxWithParts(stage.id)(idx))
+      case rs: ResultStage =>
+        stage.findGlobalMissingPartitions()
+    }
     val rst = MMap.empty[String, Long]
     val taskIdToDataDist: Map[Int, Map[String, Long]] = try {
       stage match {
@@ -1073,8 +1088,16 @@ class DAGScheduler(
         hostToParts(bestHost) += partId
       }
     }
+    stageIdToIdxWithParts(stage.id) = Array.ofDim(hostToParts.size)
+
+    stage match {
+      case sms: ShuffleMapStage =>
+        sms.initOutputLocs(hostToParts.size)
+      case _ =>
+    }
 
     val desc = hostToParts.zipWithIndex.map { case ((host, parts), idx) =>
+      stageIdToIdxWithParts(stage.id)(idx) = parts.toArray
       val serializedStage = Stage.serializeWithDependencies(
         stage, jobId, parts.toArray, properties,
         allBlockManagerIds.filter(bId => bId.host != host),
@@ -1102,11 +1125,12 @@ class DAGScheduler(
 
   // TODO-lzp: 处理单个集群上的stage结束
   private[scheduler] def subStageFinished(
-    stageId: Int, parts: Array[Int], results: Array[_]): Unit = {
+    stageId: Int, stageIdx: Int, results: Array[_]): Unit = {
     if (!stageIdToStage.contains(stageId)) {
       logInfo(s"the stage(id: $stageId) is not belong to the application")
     } else {
       val stage = stageIdToStage(stageId)
+      val parts = stageIdToIdxWithParts(stageId)(stageIdx)
       if (!runningStages.contains(stage)) {
         logInfo(s"the stage(id: $stageId) is not running. the results will be drop")
       } else {
@@ -1138,10 +1162,12 @@ class DAGScheduler(
                 logInfo(s"Ignoring result from subStage(id: $stageId) " +
                   "because its job has finished")
             }
+
+            // 虽然是ShuffleMapStage, 但其实处理的是FakeStage
           case sms: ShuffleMapStage =>
-            parts.indices.foreach { idx =>
-              sms.addOutputLoc(parts(idx), results(idx).asInstanceOf[MapStatus])
-            }
+            assert(results.length == 1,
+              s"wrong FakeStage's result size ${results.length}, should be 1")
+            sms.addOutputLoc(stageIdx, results(0).asInstanceOf[MapStatus])
             // TODO-lzp: 这里未考虑ShuffleMapStageJob的事, 它的特殊在于ShuffleMapStage也可以指定计算
             // 的分区, 因此pendingPartitions结束不代表Stage可用, 改起来也还行, 就是得搞明白序列化的一些
             // 事, 即pendingPartitions在GD/SD的存在
@@ -1151,7 +1177,7 @@ class DAGScheduler(
               logInfo("running: " + runningStages)
               logInfo("waiting: " + waitingStages)
               logInfo("failed: " + failedStages)
-              mapOutputTracker.registerGlobalMapOutputs(
+              mapOutputTracker.registerMapOutputs(
                 sms.shuffleDep.shuffleId,
                 sms.outputLocInMapOutputTrackerFormat(),
                 changeEpoch = true

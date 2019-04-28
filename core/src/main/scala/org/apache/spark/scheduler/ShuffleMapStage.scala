@@ -42,7 +42,8 @@ private[spark] class ShuffleMapStage(
     @(transient @param) parents: List[Stage],
     @(transient @param) firstJobId: Int,
     callSite: CallSite,
-    val shuffleDep: ShuffleDependency[_, _, _])
+    val shuffleDep: ShuffleDependency[_, _, _],
+    val fakeRDD: RDD[_])  // fakeShuffledRDD
   extends Stage(id, rdd, numTasks, parents, firstJobId, callSite) {
 
   @transient private[this] var _mapStageJobs: List[ActiveJob] = Nil
@@ -52,8 +53,9 @@ private[spark] class ShuffleMapStage(
    * and each value in the array is the list of possible [[MapStatus]] for a partition
    * (a single task might run multiple times).
    */
-    // TODO-lzp: 感觉可以改为calcPartitions.size大小的数组
-  @transient private[this] val outputLocs = Array.fill[List[MapStatus]](numPartitions)(Nil)
+  @transient private[this] var outputLocs: Array[List[MapStatus]] = _
+
+  def initOutputLocs(subStageSize: Int): Unit = outputLocs = Array.fill(subStageSize)(Nil)
 
   override def toString: String = "ShuffleMapStage " + id
 
@@ -82,26 +84,24 @@ private[spark] class ShuffleMapStage(
   def numAvailableOutputs: Int = numFinished
 
   override def findGlobalMissingPartitions(): Seq[Int] = {
-    val missing = (0 until numPartitions).filter(id => outputLocs(id).isEmpty)
-    assert(missing.size == numPartitions - numFinished,
-      s"${missing.size} missing, expected ${numPartitions - numFinished}")
+    val missing = outputLocs.indices.filter(id => outputLocs(id).isEmpty)
     missing
   }
 
-  def addOutputLoc(partition: Int, status: MapStatus): Unit = {
-    val prevList = outputLocs(partition)
-    outputLocs(partition) = status :: prevList
+  def addOutputLoc(stageIdx: Int, status: MapStatus): Unit = {
+    val prevList = outputLocs(stageIdx)
+    outputLocs(stageIdx) = status :: prevList
     if (prevList == Nil) {
-      numFinished += 1
+      numFinished += status.asInstanceOf[SimpleMapStatus].partitionsLen
     }
   }
 
-  def removeOutputLoc(partition: Int, bmAddress: BlockManagerId): Unit = {
-    val prevList = outputLocs(partition)
+  def removeOutputLoc(stageIdx: Int, bmAddress: BlockManagerId): Unit = {
+    val prevList = outputLocs(stageIdx)
     val newList = prevList.filterNot(_.location == bmAddress)
-    outputLocs(partition) = newList
+    outputLocs(stageIdx) = newList
     if (prevList != Nil && newList == Nil) {
-      numFinished -= 1
+      numFinished -= prevList.head.asInstanceOf[SimpleMapStatus].partitionsLen
     }
   }
 

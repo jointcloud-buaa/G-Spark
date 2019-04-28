@@ -56,8 +56,8 @@ private[spark] class ResultTask[T, U](
     partition: Partition,
     locs: Seq[TaskLocation],
     val outputId: Int,
-    localProperties: Properties,
     metrics: TaskMetrics,
+    localProperties: Properties,
     jobId: Option[Int] = None,
     appId: Option[String] = None,
     appAttemptId: Option[String] = None)
