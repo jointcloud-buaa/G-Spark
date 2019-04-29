@@ -160,7 +160,7 @@ private[spark] trait MapOutputTracker extends Logging {
    *
    * (It would be nice to remove this restriction in the future.)
    */
-  protected def getStatuses(shuffleId: Int): MMap[Int, MapStatus] = {
+  def getStatuses(shuffleId: Int): MMap[Int, MapStatus] = {
     val statuses = mapStatuses.get(shuffleId).orNull
     if (statuses == null) {
       logInfo("Don't have map outputs for shuffle " + shuffleId + ", fetching them")

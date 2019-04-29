@@ -22,7 +22,7 @@ import java.nio.ByteBuffer
 
 import scala.collection.mutable
 import scala.collection.mutable.HashMap
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.util.Random
@@ -37,7 +37,7 @@ import org.apache.spark.memory.{MemoryManager, MemoryMode}
 import org.apache.spark.network._
 import org.apache.spark.network.buffer.{ManagedBuffer, NettyManagedBuffer}
 import org.apache.spark.network.netty.SparkTransportConf
-import org.apache.spark.network.shuffle.ExternalShuffleClient
+import org.apache.spark.network.shuffle.{BlockFetchingListener, ExternalShuffleClient}
 import org.apache.spark.network.shuffle.protocol.ExecutorShuffleInfo
 import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.security.CryptoStreamUtils
@@ -302,18 +302,42 @@ private[spark] class BlockManager(
    */
   override def getBlockData(blockId: BlockId): ManagedBuffer = {
     // TODO-lzp: 加入关于RemoteShuffleBlockId的识别, 用于获取数据
-    if (blockId.isShuffle) {
-      shuffleManager.shuffleBlockResolver.getBlockData(blockId.asInstanceOf[ShuffleBlockId])
-    } else {
-      getLocalBytes(blockId) match {
-        case Some(buffer) => new BlockManagerManagedBuffer(blockInfoManager, blockId, buffer)
-        case None =>
-          // If this block manager receives a request for a block that it doesn't have then it's
-          // likely that the master has outdated block statuses for this block. Therefore, we send
-          // an RPC so that this block is marked as being unavailable from this block manager.
-          reportBlockStatus(blockId, BlockStatus.empty)
-          throw new BlockNotFoundException(blockId.toString)
-      }
+    blockId match {
+      case sbId: ShuffleBlockId =>
+        shuffleManager.shuffleBlockResolver.getBlockData(sbId)
+      case hasbId: HostAwareShuffleBlockId =>
+        shuffleManager.shuffleBlockResolver.getRemoteShuffleBlockData(hasbId)
+      case rsId: RemoteShuffleBlockId =>
+        // TODO-lzp: 这里是个阻塞代码, 有点恶心
+        //           理想是, 通过clusterA的SD, 让clusterB的SD与clusterA的从节点建立数据链路
+        //           但是, 要在Spark实现的Netty封装中, 实现这个, 目前还没想清楚
+        //           核心是实现一个基于Socket的ManagedBuffer
+        val result = Promise[ManagedBuffer]()
+        val newBlockId = ShuffleBlockId(rsId.shuffleId, rsId.reduceId, rsId.reduceId)
+        val mapStatus = mapOutputTracker.getStatuses(rsId.shuffleId)(rsId.reduceId)
+        val loc = mapStatus.location
+        shuffleClient.fetchBlocks(loc.host, loc.port, loc.executorId, Array(newBlockId.toString),
+          new BlockFetchingListener {
+            override def onBlockFetchSuccess(blockId: String, buf: ManagedBuffer): Unit = {
+              result.success(buf)
+            }
+            override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
+              result.failure(exception)
+            }
+          }
+        )
+        ThreadUtils.awaitResult(result.future, Duration.Inf)
+        result.future.value.get.get
+      case _ =>
+        getLocalBytes(blockId) match {
+          case Some(buffer) => new BlockManagerManagedBuffer(blockInfoManager, blockId, buffer)
+          case None =>
+            // If this block manager receives a request for a block that it doesn't have then it's
+            // likely that the master has outdated block statuses for this block. Therefore, we send
+            // an RPC so that this block is marked as being unavailable from this block manager.
+            reportBlockStatus(blockId, BlockStatus.empty)
+            throw new BlockNotFoundException(blockId.toString)
+        }
     }
   }
 

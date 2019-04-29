@@ -233,6 +233,8 @@ class StageScheduler(
       case _ =>
     }
 
+    // 这里有两个版本, 一个版本是尽量向同一个BlockManagerId发送尽可能多的请求块
+    // 一个则是多次向不同的BlockManagerId发送少量的请求块(当前版本)
     val buf = MMap.empty[Int, Array[Int]]
     registerRemoteShuffle(stage.rdd, parts, buf)
     buf.foreach { case (shuffleId, _parts) =>

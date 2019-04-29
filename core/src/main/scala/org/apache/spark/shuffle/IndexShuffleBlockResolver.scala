@@ -211,6 +211,17 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
+  override def getRemoteShuffleBlockData(blockId: HostAwareShuffleBlockId): ManagedBuffer = {
+    val dataFile = blockManager.diskBlockManager.getFile(blockId)
+    val len = dataFile.length()
+    new FileSegmentManagedBuffer(
+      transportConf,
+      dataFile,
+      0,
+      len
+    )
+  }
+
   override def stop(): Unit = {}
 }
 
