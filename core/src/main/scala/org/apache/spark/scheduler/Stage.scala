@@ -22,7 +22,7 @@ import java.nio.ByteBuffer
 import java.util.Properties
 
 import scala.collection.mutable
-import scala.collection.mutable.{HashMap, HashSet}
+import scala.collection.mutable.{HashMap, HashSet, Map => MMap}
 import scala.reflect.ClassTag
 
 import org.apache.spark._
@@ -99,6 +99,10 @@ private[spark] abstract class Stage(
 
   def getPartResults: Array[Any] = {
     partResults.map(_.headOption.orNull)
+  }
+
+  def getMapPartResults: MMap[Int, Any] = {
+    MMap.empty ++ _calcPartIds.zip(getPartResults)
   }
 
   def isSiteAvailable: Boolean = numFinished == _calcPartIds.length

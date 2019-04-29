@@ -18,6 +18,7 @@
 package org.apache.spark.scheduler
 
 import scala.annotation.meta.{field, param}
+import scala.collection.mutable.{Map => MMap}
 
 import org.apache.spark.ShuffleDependency
 import org.apache.spark.rdd.RDD
@@ -116,8 +117,8 @@ private[spark] class ShuffleMapStage(
    * value contains only one (i.e. the first) [[MapStatus]]. If there is no entry for the partition,
    * that position is filled with null.
    */
-  def outputLocInMapOutputTrackerFormat(): Array[MapStatus] = {
-    outputLocs.map(_.headOption.orNull)
+  def outputLocInMapOutputTrackerFormat(): MMap[Int, MapStatus] = {
+    MMap.empty ++ outputLocs.indices.zip(outputLocs.map(_.headOption.orNull))
   }
 
   // ==== 在SD中执行

@@ -397,23 +397,19 @@ class DAGScheduler(
     shuffleIdToMapStage(shuffleDep.shuffleId) = stage
     updateJobIdStageIdMaps(jobId, stage)
 
-    // TODO-lzp: 这里逻辑应该没错, GD到底要保存什么位置信息
     if (mapOutputTracker.containsShuffle(shuffleDep.shuffleId)) {
       // A previously run stage generated partitions for this shuffle, so for each output
       // that's still available, copy information about that output location to the new stage
       // (so we don't unnecessarily re-compute that data).
       val locs = mapOutputTracker.getMapOutputStatuses(shuffleDep.shuffleId)
-      locs.indices.foreach { i =>
-        if (locs(i) ne null) {
-          // locs(i) will be null if missing
-          stage.addOutputLoc(i, locs(i))
-        }
+      locs.foreach { case (stageIdx, status) =>
+          if (status ne null) stage.addOutputLoc(stageIdx, status)
       }
     } else {
       // Kind of ugly: need to register RDDs with the cache and map output tracker here
       // since we can't do it in the RDD constructor because # of partitions is unknown
       logInfo("Registering RDD " + rdd.id + " (" + rdd.getCreationSite + ")")
-      mapOutputTracker.registerShuffle(shuffleDep.shuffleId, rdd.partitions.length)
+      mapOutputTracker.registerShuffle(shuffleDep.shuffleId)
     }
     stage
   }

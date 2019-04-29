@@ -22,8 +22,7 @@ import java.util.concurrent.{ConcurrentHashMap, LinkedBlockingQueue, ThreadPoolE
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Map}
-import scala.collection.mutable
+import scala.collection.mutable.{ArrayBuffer, HashMap => SHashMap, HashSet, Map => MMap}
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
@@ -66,7 +65,7 @@ private[spark] trait MapOutputTracker extends Logging {
 
   var trackerEndpoint: RpcEndpointRef = _
 
-  protected val mapStatuses: Map[Int, Array[MapStatus]]
+  protected val mapStatuses: MMap[Int, MMap[Int, MapStatus]]
 
   protected var epoch: Long = 0
 
@@ -130,7 +129,7 @@ private[spark] trait MapOutputTracker extends Logging {
     // Synchronize on the returned array because, on the driver, it gets mutated in place
     statuses.synchronized {
       val totalSizes = new Array[Long](dep.partitioner.numPartitions)
-      for (s <- statuses) {
+      for ((_, s) <- statuses) {
         for (i <- 0 until totalSizes.length) {
           totalSizes(i) += s.getSizeForBlock(i)
         }
@@ -145,12 +144,12 @@ private[spark] trait MapOutputTracker extends Logging {
    *
    * (It would be nice to remove this restriction in the future.)
    */
-  protected def getStatuses(shuffleId: Int): Array[MapStatus] = {
+  protected def getStatuses(shuffleId: Int): MMap[Int, MapStatus] = {
     val statuses = mapStatuses.get(shuffleId).orNull
     if (statuses == null) {
       logInfo("Don't have map outputs for shuffle " + shuffleId + ", fetching them")
       val startTime = System.currentTimeMillis
-      var fetchedStatuses: Array[MapStatus] = null
+      var fetchedStatuses: MMap[Int, MapStatus] = null
       fetching.synchronized {
         // Someone else is fetching it; wait for them to be done
         while (fetching.contains(shuffleId)) {
@@ -228,15 +227,15 @@ private[spark] trait MapOutputTrackerM extends MapOutputTracker {
   // can be read locally, but may lead to more delay in scheduling if those locations are busy.
   private val REDUCER_PREF_LOCS_FRACTION = 0.2
 
-  def registerShuffle(shuffleId: Int, numMaps: Int) {
-    if (mapStatuses.put(shuffleId, new Array[MapStatus](numMaps)).isDefined) {
+  def registerShuffle(shuffleId: Int) {
+    if (mapStatuses.put(shuffleId, MMap.empty[Int, MapStatus]).isDefined) {
       throw new IllegalArgumentException("Shuffle ID " + shuffleId + " registered twice")
     }
   }
 
   def registerMapOutputs(
     shuffleId: Int,
-    statuses: Array[MapStatus],
+    statuses: MMap[Int, MapStatus],
     changeEpoch: Boolean = false): Unit = {
     // 这里会替换同shuffleId的非Fake的Stage的map输出
     mapStatuses.put(shuffleId, statuses.clone())
@@ -295,11 +294,9 @@ private[spark] trait MapOutputTrackerM extends MapOutputTracker {
       statuses.synchronized {
         if (statuses.nonEmpty) {
           // HashMap to add up sizes of all blocks at the same location
-          val locs = new HashMap[BlockManagerId, Long]
+          val locs = new SHashMap[BlockManagerId, Long]
           var totalOutputSize = 0L
-          var mapIdx = 0
-          while (mapIdx < statuses.length) {
-            val status = statuses(mapIdx)
+          statuses.values.foreach { status =>
             // status may be null here if we are called between registerShuffle, which creates an
             // array with null entries for each output, and registerMapOutputs, which populates it
             // with valid status entries. This is possible if one thread schedules a job which
@@ -311,7 +308,6 @@ private[spark] trait MapOutputTrackerM extends MapOutputTracker {
                 totalOutputSize += blockSize
               }
             }
-            mapIdx = mapIdx + 1
           }
           val topLocs = locs.filter { case (loc, size) =>
             size.toDouble / totalOutputSize >= fractionThreshold
@@ -330,16 +326,16 @@ private[spark] trait MapOutputTrackerM extends MapOutputTracker {
 
 private[spark] class MapOutputTrackerGlobalMaster(val conf: SparkConf) extends MapOutputTrackerM {
 
-  protected val mapStatuses = new ConcurrentHashMap[Int, Array[MapStatus]]().asScala
+  protected val mapStatuses = new ConcurrentHashMap[Int, MMap[Int, MapStatus]]().asScala
 
-  def getMapOutputStatuses(shuffleId: Int): Array[MapStatus] = mapStatuses(shuffleId)
+  def getMapOutputStatuses(shuffleId: Int): MMap[Int, MapStatus] = mapStatuses(shuffleId)
 
-  def getDataDist(dep: ShuffleDependency[_, _, _], reduceId: Int): Predef.Map[String, Long] = {
+  def getDataDist(dep: ShuffleDependency[_, _, _], reduceId: Int): Map[String, Long] = {
     val statuses = mapStatuses.get(dep.shuffleId).orNull
     if (statuses != null) {
       statuses.synchronized {
         if (statuses.nonEmpty) {
-          val locs = statuses.map(s => (s.location.host, s.getSizeForBlock(reduceId))).toMap
+          val locs = statuses.values.map(s => (s.location.host, s.getSizeForBlock(reduceId))).toMap
           // 此处的host最早来自createSiteDriverEnv中的host, 来自SiteContext中的hostname,
           // 来自SiteDriverWrapper中的host, 来自SiteMaster在SiteDriverRunner中的hostname
           // 来自于SiteMaster中的host. 此host在RegisterSiteDriver中传入GlobalDriverEndpoint,
@@ -349,7 +345,7 @@ private[spark] class MapOutputTrackerGlobalMaster(val conf: SparkConf) extends M
         }
       }
     }
-    Predef.Map.empty
+    Map.empty
   }
 
   override def stop(): Unit = {}
@@ -371,7 +367,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
 
   // HashMaps for storing mapStatuses and cached serialized statuses in the driver.
   // Statuses are dropped only by explicit de-registering.
-  protected val mapStatuses = new ConcurrentHashMap[Int, Array[MapStatus]]().asScala
+  protected val mapStatuses = new ConcurrentHashMap[Int, MMap[Int, MapStatus]]().asScala
   private val cachedSerializedStatuses = new ConcurrentHashMap[Int, Array[Byte]]().asScala
 
   private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
@@ -379,7 +375,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   // Kept in sync with cachedSerializedStatuses explicitly
   // This is required so that the Broadcast variable remains in scope until we remove
   // the shuffleId explicitly or implicitly.
-  private val cachedSerializedBroadcast = new HashMap[Int, Broadcast[Array[Byte]]]()
+  private val cachedSerializedBroadcast = new SHashMap[Int, Broadcast[Array[Byte]]]()
 
   // This is to prevent multiple serializations of the same shuffle - which happens when
   // there is a request storm when shuffle start.
@@ -448,8 +444,8 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   // Exposed for testing
   private[spark] def getNumCachedSerializedBroadcast = cachedSerializedBroadcast.size
 
-  override def registerShuffle(shuffleId: Int, numMaps: Int) {
-    if (mapStatuses.put(shuffleId, new Array[MapStatus](numMaps)).isDefined) {
+  override def registerShuffle(shuffleId: Int) {
+    if (mapStatuses.put(shuffleId, MMap.empty[Int, MapStatus]).isDefined) {
       throw new IllegalArgumentException("Shuffle ID " + shuffleId + " registered twice")
     }
     // add in advance
@@ -469,15 +465,11 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
     parts: Array[Int],
     statuses: Array[MapStatus],
     changeEpoch: Boolean = false) {
-    val cloneStatuses = statuses.clone()
-    for (part <- parts) {
-      mapStatuses(shuffleId)(part) = cloneStatuses(part)
-    }
+    mapStatuses(shuffleId) = MMap.empty[Int, MapStatus] ++ parts.zip(statuses.clone())
     if (changeEpoch) {
       incrementEpoch()
     }
   }
-
 
   /** Unregister map output information of the given shuffle, mapper and block manager */
   def unregisterMapOutput(shuffleId: Int, mapId: Int, bmAddress: BlockManagerId) {
@@ -521,7 +513,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   }
 
   def getSerializedMapOutputStatuses(shuffleId: Int): Array[Byte] = {
-    var statuses: Array[MapStatus] = null
+    var statuses: MMap[Int, MapStatus] = null
     var retBytes: Array[Byte] = null
     var epochGotten: Long = -1
 
@@ -541,7 +533,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
             true
           case None =>
             logDebug("cached status not found for : " + shuffleId)
-            statuses = mapStatuses.getOrElse(shuffleId, Array.empty[MapStatus])
+            statuses = mapStatuses.getOrElse(shuffleId, MMap.empty[Int, MapStatus])
             epochGotten = epoch
             false
         }
@@ -600,8 +592,8 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
  */
 private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTracker {
 
-  protected val mapStatuses: Map[Int, Array[MapStatus]] =
-    new ConcurrentHashMap[Int, Array[MapStatus]]().asScala
+  protected val mapStatuses: MMap[Int, MMap[Int, MapStatus]] =
+    new ConcurrentHashMap[Int, MMap[Int, MapStatus]]().asScala
 
 
   /**
@@ -648,7 +640,7 @@ private[spark] object MapOutputTracker extends Logging {
   // Serialize an array of map output locations into an efficient byte format so that we can send
   // it to reduce tasks. We do this by compressing the serialized bytes using GZIP. They will
   // generally be pretty compressible because many map outputs will be on the same hostname.
-  def serializeMapStatuses(statuses: Array[MapStatus], broadcastManager: BroadcastManager,
+  def serializeMapStatuses(statuses: MMap[Int, MapStatus], broadcastManager: BroadcastManager,
       isLocal: Boolean, minBroadcastSize: Int): (Array[Byte], Broadcast[Array[Byte]]) = {
     val out = new ByteArrayOutputStream
     out.write(DIRECT)
@@ -681,7 +673,7 @@ private[spark] object MapOutputTracker extends Logging {
   }
 
   // Opposite of serializeMapStatuses.
-  def deserializeMapStatuses(bytes: Array[Byte]): Array[MapStatus] = {
+  def deserializeMapStatuses(bytes: Array[Byte]): MMap[Int, MapStatus] = {
     assert (bytes.length > 0)
 
     def deserializeObject(arr: Array[Byte], off: Int, len: Int): AnyRef = {
@@ -696,7 +688,7 @@ private[spark] object MapOutputTracker extends Logging {
 
     bytes(0) match {
       case DIRECT =>
-        deserializeObject(bytes, 1, bytes.length - 1).asInstanceOf[Array[MapStatus]]
+        deserializeObject(bytes, 1, bytes.length - 1).asInstanceOf[MMap[Int, MapStatus]]
       case BROADCAST =>
         // deserialize the Broadcast, pull .value array out of it, and then deserialize that
         val bcast = deserializeObject(bytes, 1, bytes.length - 1).
@@ -704,7 +696,8 @@ private[spark] object MapOutputTracker extends Logging {
         logInfo("Broadcast mapstatuses size = " + bytes.length +
           ", actual size = " + bcast.value.length)
         // Important - ignore the DIRECT tag ! Start from offset 1
-        deserializeObject(bcast.value, 1, bcast.value.length - 1).asInstanceOf[Array[MapStatus]]
+        deserializeObject(bcast.value, 1, bcast.value.length - 1)
+          .asInstanceOf[MMap[Int, MapStatus]]
       case _ => throw new IllegalArgumentException("Unexpected byte tag = " + bytes(0))
     }
   }
@@ -729,11 +722,10 @@ private[spark] object MapOutputTracker extends Logging {
       shuffleId: Int,
       startPartition: Int,
       endPartition: Int,
-      statuses: Array[MapStatus]): Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
+      statuses: MMap[Int, MapStatus]): Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
     assert (statuses != null)
-    val splitsByAddress = new HashMap[BlockManagerId, ArrayBuffer[(BlockId, Long)]]
-    // TODO-lzp: 这里可能有问题，因为statuses只是这个集群上的map的数据, 及如何把相应的mapId也传递过来
-    for ((status, mapId) <- statuses.zipWithIndex) {
+    val splitsByAddress = new SHashMap[BlockManagerId, ArrayBuffer[(BlockId, Long)]]
+    for ((mapId, status) <- statuses) {
       if (status == null) {
         val errorMessage = s"Missing an output location for shuffle $shuffleId"
         logError(errorMessage)

@@ -719,7 +719,9 @@ class StageScheduler(
 
               mapOutputTracker.registerMapOutputs(
                 fakeStage.shuffleDep.shuffleId,
-                fakeStage.getPartResults.map(_.asInstanceOf[MapStatus]),
+                fakeStage.getMapPartResults.map {
+                  case (mapId, rst) => (mapId, rst.asInstanceOf[MapStatus])
+                },
                 changeEpoch = true
               )
 
@@ -893,13 +895,11 @@ class StageScheduler(
         if (mapOutputTracker.containsShuffle(dep.shuffleId)) {
           val serLocs = mapOutputTracker.getSerializedMapOutputStatuses(dep.shuffleId)
           val locs = MapOutputTracker.deserializeMapStatuses(serLocs)
-          locs.indices.foreach { idx =>
-            if (locs(idx) ne null) {
-              shuffleStage.addPartResult(idx, locs(idx))
-            }
+          locs.foreach { case (mapId, loc) =>
+              if (loc ne null) shuffleStage.addPartResult(mapId, loc)
           }
         } else {
-          mapOutputTracker.registerShuffle(dep.shuffleId, stage.calcPartIds.length)
+          mapOutputTracker.registerShuffle(dep.shuffleId)
         }
       case _ =>
     }
