@@ -19,6 +19,7 @@ package org.apache.spark.storage
 
 import java.io.InputStream
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.atomic.AtomicLong
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable.{ArrayBuffer, HashSet, Queue}
@@ -56,6 +57,7 @@ final class ShuffleBlockFetcherIterator(
     shuffleClient: ShuffleClient,
     blockManager: BlockManager,
     blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
+  extraFetch: (Long) => (Long, BlockManagerId, Seq[(BlockId, Long)], Int),
     maxBytesInFlight: Long,
     maxReqsInFlight: Int)
   extends Iterator[(BlockId, InputStream)] with Logging {
@@ -84,6 +86,8 @@ final class ShuffleBlockFetcherIterator(
   /** Remote blocks to fetch, excluding zero-sized blocks. */
   private[this] val remoteBlocks = new HashSet[BlockId]()
 
+  private[this] val requestId = new AtomicLong(-1)
+
   /**
    * A queue to hold our results. This turns the asynchronous model provided by
    * [[org.apache.spark.network.BlockTransferService]] into a synchronous model (iterator).
@@ -107,6 +111,8 @@ final class ShuffleBlockFetcherIterator(
 
   /** Current number of requests in flight */
   private[this] var reqsInFlight = 0
+
+  private[this] var nonFinishedExtraBlocks = 0
 
   private[this] val shuffleMetrics = context.taskMetrics().createTempShuffleReadMetrics()
 
@@ -193,6 +199,40 @@ final class ShuffleBlockFetcherIterator(
     )
   }
 
+  private[this] def buildRemoteBlocks(
+    address: BlockManagerId,
+    blockInfos: Seq[(BlockId, Long)]): ArrayBuffer[FetchRequest] = {
+    val targetRequestSize = math.max(maxBytesInFlight / 5, 1L)
+    val remoteRequests = new ArrayBuffer[FetchRequest]
+    val iterator = blockInfos.iterator
+    var curRequestSize = 0L
+    var curBlocks = new ArrayBuffer[(BlockId, Long)]
+    while (iterator.hasNext) {
+      val (blockId, size) = iterator.next()
+      // Skip empty blocks
+      if (size > 0) {
+        curBlocks += ((blockId, size))
+        remoteBlocks += blockId
+        numBlocksToFetch += 1
+        curRequestSize += size
+      } else if (size < 0) {
+        throw BlockException(blockId, "Negative block size " + size)
+      }
+      if (curRequestSize >= targetRequestSize) {
+        // Add this FetchRequest
+        remoteRequests += FetchRequest(address, curBlocks)
+        curBlocks = new ArrayBuffer[(BlockId, Long)]
+        logDebug(s"Creating fetch request of $curRequestSize at $address")
+        curRequestSize = 0
+      }
+    }
+    // Add in the final request
+    if (curBlocks.nonEmpty) {
+      remoteRequests += FetchRequest(address, curBlocks)
+    }
+    remoteRequests
+  }
+
   private[this] def splitLocalRemoteBlocks(): ArrayBuffer[FetchRequest] = {
     // Make remote requests at most maxBytesInFlight / 5 in length; the reason to keep them
     // smaller than maxBytesInFlight is to allow multiple, parallel fetches from up to 5
@@ -213,32 +253,8 @@ final class ShuffleBlockFetcherIterator(
         localBlocks ++= blockInfos.filter(_._2 != 0).map(_._1)
         numBlocksToFetch += localBlocks.size
       } else {
-        val iterator = blockInfos.iterator
-        var curRequestSize = 0L
-        var curBlocks = new ArrayBuffer[(BlockId, Long)]
-        while (iterator.hasNext) {
-          val (blockId, size) = iterator.next()
-          // Skip empty blocks
-          if (size > 0) {
-            curBlocks += ((blockId, size))
-            remoteBlocks += blockId
-            numBlocksToFetch += 1
-            curRequestSize += size
-          } else if (size < 0) {
-            throw new BlockException(blockId, "Negative block size " + size)
-          }
-          if (curRequestSize >= targetRequestSize) {
-            // Add this FetchRequest
-            remoteRequests += new FetchRequest(address, curBlocks)
-            curBlocks = new ArrayBuffer[(BlockId, Long)]
-            logDebug(s"Creating fetch request of $curRequestSize at $address")
-            curRequestSize = 0
-          }
-        }
-        // Add in the final request
-        if (curBlocks.nonEmpty) {
-          remoteRequests += new FetchRequest(address, curBlocks)
-        }
+        val requests = buildRemoteBlocks(address, blockInfos)
+        remoteRequests ++= requests
       }
     }
     logInfo(s"Getting $numBlocksToFetch non-empty blocks out of $totalBlocks blocks")
@@ -291,9 +307,17 @@ final class ShuffleBlockFetcherIterator(
     // Get Local Blocks
     fetchLocalBlocks()
     logDebug("Got local blocks in " + Utils.getUsedTimeMs(startTime))
+
+    val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch(requestId.get())
+    requestId.set(rid)
+    // 会在内部更新numBlocksToFetch
+    val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
+    fetchRequests ++= Utils.randomize(extraRemoteRequests)
+    nonFinishedExtraBlocks = nonFinished
   }
 
-  override def hasNext: Boolean = numBlocksProcessed < numBlocksToFetch
+  override def hasNext: Boolean =
+    numBlocksProcessed < numBlocksToFetch || nonFinishedExtraBlocks > 0
 
   /**
    * Fetches the next (BlockId, InputStream). If a task fails, the ManagedBuffers
@@ -330,6 +354,19 @@ final class ShuffleBlockFetcherIterator(
     }
     // Send fetch requests up to maxBytesInFlight
     fetchUpToMaxBytes()
+
+    // 查看是否所有的远程块都已经拉取成功
+    if (nonFinishedExtraBlocks > 0) {
+      val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch(requestId.get())
+      assert(requestId.get() == rid, s"wrong requestId, return $rid, actual need ${requestId.get}")
+      assert(extraBlocks.length == nonFinishedExtraBlocks - nonFinished,
+        s"wrong blockIds size, actual ${extraBlocks.length}, " +
+          s"need ${nonFinishedExtraBlocks - nonFinished}")
+      // 会在内部更新numBlocksToFetch
+      val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
+      fetchRequests ++= Utils.randomize(extraRemoteRequests)
+      nonFinishedExtraBlocks = nonFinished
+    }
 
     result match {
       case FailureFetchResult(blockId, address, e) =>

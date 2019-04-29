@@ -30,7 +30,7 @@ import scala.util.control.NonFatal
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.{ComponentContext, ContextCleaner, SparkConf, SparkEnv, SparkException, SparkFiles}
+import org.apache.spark.{ComponentContext, ContextCleaner, MapOutputTrackerMaster, SparkConf, SparkEnv, SparkException, SparkFiles}
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -241,6 +241,10 @@ private[spark] class SiteContext(
       }
 
     env.blockManager.initialize(_siteAppId)
+
+    // 让mapOutputTracker知晓SiteDriver's blockManagerId
+    env.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster]
+      .setBlockManagerId(env.blockManager.blockManagerId)
 
     _cleaner =
       if (_conf.getBoolean("spark.cleaner.referenceTracking", true)) {

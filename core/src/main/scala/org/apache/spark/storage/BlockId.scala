@@ -39,6 +39,7 @@ sealed abstract class BlockId {
   def isRDD: Boolean = isInstanceOf[RDDBlockId]
   def isShuffle: Boolean = isInstanceOf[ShuffleBlockId]
   def isRemoteShuffle: Boolean = isInstanceOf[RemoteShuffleBlockId]
+  def isHostShuffle: Boolean = isInstanceOf[HostAwareShuffleBlockId]
   def isBroadcast: Boolean = isInstanceOf[BroadcastBlockId]
 
   override def toString: String = name
@@ -61,9 +62,17 @@ case class ShuffleBlockId(shuffleId: Int, mapId: Int, reduceId: Int) extends Blo
   override def name: String = "shuffle_" + shuffleId + "_" + mapId + "_" + reduceId
 }
 
+// 在SD间进行数据传输时, 使用的块名映射
 @DeveloperApi
 case class RemoteShuffleBlockId(shuffleId: Int, reduceId: Int) extends BlockId {
   override def name: String = s"remote_shuffle_${shuffleId}_$reduceId"
+}
+
+// 在SD中存储从其余SD拉取的数据时, 使用的块名映射, 因为同shuffleId/reduceId有多个块, 区别只是SD的不同
+@DeveloperApi
+case class HostAwareShuffleBlockId(hostPort: String, shuffleId: Int, reduceId: Int)
+  extends BlockId {
+  override def name: String = s"host_shuffle_${shuffleId}_${reduceId}_$hostPort"
 }
 
 @DeveloperApi
@@ -110,6 +119,8 @@ private[spark] case class TestBlockId(id: String) extends BlockId {
 object BlockId {
   val RDD = "rdd_([0-9]+)_([0-9]+)".r
   val REMOTE_SHUFFLE = "remote_shuffle_([0-9]+)_([0-9]+)".r
+  // 将主机名放在最后
+  val HOST_SHUFFLE = "host_shuffle_([0-9]+)_([0-9]+)_(.+)".r
   val SHUFFLE = "shuffle_([0-9]+)_([0-9]+)_([0-9]+)".r
   val SHUFFLE_DATA = "shuffle_([0-9]+)_([0-9]+)_([0-9]+).data".r
   val SHUFFLE_INDEX = "shuffle_([0-9]+)_([0-9]+)_([0-9]+).index".r
@@ -124,6 +135,8 @@ object BlockId {
       RDDBlockId(rddId.toInt, splitIndex.toInt)
     case REMOTE_SHUFFLE(shuffleId, reduceId) =>
       RemoteShuffleBlockId(shuffleId.toInt, reduceId.toInt)
+    case HOST_SHUFFLE(shuffleId, reduceId, hostPort) =>
+      HostAwareShuffleBlockId(hostPort, shuffleId.toInt, reduceId.toInt)
     case SHUFFLE(shuffleId, mapId, reduceId) =>
       ShuffleBlockId(shuffleId.toInt, mapId.toInt, reduceId.toInt)
     case SHUFFLE_DATA(shuffleId, mapId, reduceId) =>

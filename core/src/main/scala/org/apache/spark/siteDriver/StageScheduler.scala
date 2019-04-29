@@ -189,6 +189,19 @@ class StageScheduler(
     }
   }
 
+  // TODO-lzp: 改递归为层次遍历
+  private def registerRemoteShuffle(
+    rdd: RDD[_],
+    parts: Array[Int],
+    buf: MMap[Int, Array[Int]]): Unit = {
+    rdd.dependencies.foreach {
+      case sdep: ShuffleDependency[_, _, _] =>
+        buf(sdep.shuffleId) = parts
+      case ndep: NarrowDependency[_] =>
+        registerRemoteShuffle(ndep.rdd, parts.flatMap(ndep.getParents), buf)
+    }
+  }
+
   def stageSubmitted(stageDesc: StageDescription): Unit = {
     val stageId = stageDesc.stageId
     val subStageIdx = stageDesc.index
@@ -220,9 +233,32 @@ class StageScheduler(
       case _ =>
     }
 
+    val buf = MMap.empty[Int, Array[Int]]
+    registerRemoteShuffle(stage.rdd, parts, buf)
+    buf.foreach { case (shuffleId, _parts) =>
+      fetchRemoteShuffleStart(shuffleId, _parts, blockMIds)
+    }
+
     stageIdToStage(stage.id) = stage
 
     eventProcessLoop.post(StageSubmitted(jobId, stage))
+  }
+
+  // TODO-lzp: 增加重试机制
+  def fetchRemoteShuffleStart(
+    shuffleId: Int,
+    parts: Array[Int],
+    blockMIds: Array[BlockManagerId]): Unit = {
+
+    val fetchStatus = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)
+
+    blockMIds.foreach { blockMId =>
+      // 因为在registerRemoteShuffle后, 对任意BlockManagerId, 其都有默认的Array[(Boolean, Long)]
+      val partResults = fetchStatus(blockMId)
+      val blockIds = parts.filterNot(id => partResults(id)._1)
+        .map(p => RemoteShuffleBlockId(shuffleId, p)).map(_.asInstanceOf[BlockId])
+      SiteShuffleBlockFetcher.fetchRemoteShuffleBlock(blockMId, blockIds)
+    }
   }
 
   /**
@@ -723,6 +759,11 @@ class StageScheduler(
                   case (mapId, rst) => (mapId, rst.asInstanceOf[MapStatus])
                 },
                 changeEpoch = true
+              )
+
+              mapOutputTracker.registerRemoteShuffle(
+                fakeStage.shuffleDep.shuffleId,
+                fakeStage.shuffleDep.partitioner.numPartitions
               )
 
               // 报告结果, 向mapOutput注册想了想还是在GD中进行吧

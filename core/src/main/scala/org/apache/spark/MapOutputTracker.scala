@@ -19,10 +19,12 @@ package org.apache.spark
 
 import java.io._
 import java.util.concurrent.{ConcurrentHashMap, LinkedBlockingQueue, ThreadPoolExecutor}
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, HashMap => SHashMap, HashSet, Map => MMap}
+import scala.collection.mutable
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
@@ -31,15 +33,24 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpoint, RpcEndpointRef, RpcEnv}
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.MetadataFetchFailedException
-import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockId}
+import org.apache.spark.storage.{BlockId, BlockManagerId, HostAwareShuffleBlockId, ShuffleBlockId}
 import org.apache.spark.util._
 
 private[spark] sealed trait MapOutputTrackerMessage
 private[spark] case class GetMapOutputStatuses(shuffleId: Int)
   extends MapOutputTrackerMessage
+private[spark] case class GetRemoteShuffleStatuses(requestId: Long, shuffleId: Int, reduceId: Int)
+  extends MapOutputTrackerMessage
 private[spark] case object StopMapOutputTracker extends MapOutputTrackerMessage
 
+private[spark] trait GetStatusMessage {
+  val shuffleId: Int
+  val context: RpcCallContext
+}
 private[spark] case class GetMapOutputMessage(shuffleId: Int, context: RpcCallContext)
+  extends GetStatusMessage
+private[spark] case class GetRemoteShuffleMessage(requestId: Long, shuffleId: Int, reduceId: Int,
+  context: RpcCallContext) extends GetStatusMessage
 
 /** RpcEndpoint class for MapOutputTrackerMaster */
 private[spark] class MapOutputTrackerMasterEndpoint(
@@ -53,6 +64,11 @@ private[spark] class MapOutputTrackerMasterEndpoint(
       val hostPort = context.senderAddress.hostPort
       logInfo("Asked to send map output locations for shuffle " + shuffleId + " to " + hostPort)
       tracker.post(GetMapOutputMessage(shuffleId, context))
+
+    case GetRemoteShuffleStatuses(requestId: Long, shuffleId: Int, reduceId: Int) =>
+      val hostPort = context.senderAddress.hostPort
+      logInfo(s"Asked to send remote shuffle locations for shuffle $shuffleId to $hostPort")
+      tracker.post(GetRemoteShuffleMessage(requestId, shuffleId, reduceId, context))
 
     case StopMapOutputTracker =>
       logInfo("MapOutputTrackerMasterEndpoint stopped!")
@@ -358,6 +374,10 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
     broadcastManager: BroadcastManager, isLocal: Boolean)
   extends MapOutputTrackerM {
 
+  private var sdriverBlockManagerId: BlockManagerId = _
+
+  def setBlockManagerId(bmId: BlockManagerId): Unit = sdriverBlockManagerId = bmId
+
   /** Cache a serialized version of the output statuses for each shuffle to send them out faster */
   private var cacheEpoch = epoch
 
@@ -369,6 +389,16 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   // Statuses are dropped only by explicit de-registering.
   protected val mapStatuses = new ConcurrentHashMap[Int, MMap[Int, MapStatus]]().asScala
   private val cachedSerializedStatuses = new ConcurrentHashMap[Int, Array[Byte]]().asScala
+
+  private val requestIdToBmIds =
+    new ConcurrentHashMap[Long, mutable.HashSet[BlockManagerId]]().asScala
+
+  private var nextRequestId = new AtomicLong(0)
+
+  // shuffleId -> host -> mapId -> (success or fail, size)
+  // 表示指定shuffleId的分区数据是否从指定主机, 远程获取到, 已经大小
+  protected val remoteShuffleFetchStatus =
+    new ConcurrentHashMap[Int, MMap[BlockManagerId, Array[(Boolean, Long)]]].asScala
 
   private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
 
@@ -382,7 +412,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   private val shuffleIdLocks = new ConcurrentHashMap[Int, AnyRef]()
 
   // requests for map output statuses
-  private val mapOutputRequests = new LinkedBlockingQueue[GetMapOutputMessage]
+  private val mapOutputRequests = new LinkedBlockingQueue[GetStatusMessage]
 
   // Thread pool used for handling map output status requests. This is a separate thread pool
   // to ensure we don't block the normal dispatcher threads.
@@ -405,7 +435,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
     throw new IllegalArgumentException(msg)
   }
 
-  def post(message: GetMapOutputMessage): Unit = {
+  def post(message: GetStatusMessage): Unit = {
     mapOutputRequests.offer(message)
   }
 
@@ -421,13 +451,32 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
               mapOutputRequests.offer(PoisonPill)
               return
             }
-            val context = data.context
-            val shuffleId = data.shuffleId
-            val hostPort = context.senderAddress.hostPort
-            logDebug("Handling request to send map output locations for shuffle " + shuffleId +
-              " to " + hostPort)
-            val mapOutputStatuses = getSerializedMapOutputStatuses(shuffleId)
-            context.reply(mapOutputStatuses)
+            data match {
+              case GetMapOutputMessage(shuffleId, context) =>
+                val mapOutputStatuses = getSerializedMapOutputStatuses(shuffleId)
+                context.reply(mapOutputStatuses)
+              case GetRemoteShuffleMessage(requestId, shuffleId, reduceId, context) =>
+                val statuses = remoteShuffleFetchStatus(shuffleId)
+                var newRequestId = requestId
+                if (requestId == -1) {  // 初始化
+                  newRequestId = nextRequestId.addAndGet(1)
+                  requestIdToBmIds(newRequestId) = mutable.HashSet.empty
+                }
+                var nonFinished = 0
+                val blockIds = statuses.flatMap{ case (bmId, parts) =>
+                  val sp = parts(reduceId)
+                  if (!sp._1) {  // 未完成
+                    nonFinished += 1
+                    None
+                  } else if (requestIdToBmIds(newRequestId).contains(bmId)) {  // 已传输
+                    None
+                  } else {  // 未传输
+                    requestIdToBmIds(newRequestId) += bmId
+                    Some((HostAwareShuffleBlockId(bmId.hostPort, shuffleId, reduceId), sp._2))
+                  }
+                }.toSeq
+                context.reply((sdriverBlockManagerId, blockIds, nonFinished))
+            }
           } catch {
             case NonFatal(e) => logError(e.getMessage, e)
           }
@@ -458,6 +507,27 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
       array(mapId) = status
     }
   }
+
+  def registerRemoteShuffle(shuffleId: Int, partsNum: Int): Unit = {
+    if (remoteShuffleFetchStatus.put(shuffleId,
+      MMap.empty[BlockManagerId, Array[(Boolean, Long)]].withDefaultValue(Array.ofDim(partsNum))
+    ).isDefined) {
+      throw new IllegalArgumentException("Remote Shuffle ID " + shuffleId + " registered twice")
+    }
+  }
+
+  def registerRemoteShuffleFetchResult(
+    shuffleId: Int, reduceId: Int, blockMId: BlockManagerId, rst: (Boolean, Long)): Unit = {
+    if (!remoteShuffleFetchStatus.contains(shuffleId)) {
+      logWarning(s"the remote shuffle fetch status doesn't have be register for " +
+        s"shuffleId($shuffleId)")
+      return
+    }
+    remoteShuffleFetchStatus(shuffleId)(blockMId)(reduceId) = rst
+  }
+
+  def getRemoteShuffleFetchResult(shuffleId: Int): MMap[BlockManagerId, Array[(Boolean, Long)]] =
+    remoteShuffleFetchStatus(shuffleId)
 
   /** Register multiple map output information for the given shuffle */
   def registerSiteMapOutputs(
@@ -595,7 +665,6 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
   protected val mapStatuses: MMap[Int, MMap[Int, MapStatus]] =
     new ConcurrentHashMap[Int, MMap[Int, MapStatus]]().asScala
 
-
   /**
    * Called from executors to get the server URIs and output sizes for each shuffle block that
    * needs to be read from a given reduce task.
@@ -626,6 +695,14 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
     statuses.synchronized {
       return MapOutputTracker.convertMapStatuses(shuffleId, startPartition, endPartition, statuses)
     }
+  }
+
+  def getRemoteShuffleStatuses(
+    requestId: Long,
+    shuffleId: Int,
+    reduceId: Int): (Long, BlockManagerId, Seq[(BlockId, Long)], Int) = {
+    askTracker[(Long, BlockManagerId, Seq[(BlockId, Long)], Int)](
+      GetRemoteShuffleStatuses(requestId, shuffleId, reduceId))
   }
 
   override def stop(): Unit = {}
