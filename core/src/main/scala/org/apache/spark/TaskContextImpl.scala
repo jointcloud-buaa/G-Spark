@@ -37,6 +37,7 @@ private[spark] class TaskContextImpl(
     override val taskMemoryManager: TaskMemoryManager,
     localProperties: Properties,
     @transient private val metricsSystem: MetricsSystem,
+  override val isFakeTask: Boolean,
     // The default value is only used in tests.
     override val taskMetrics: TaskMetrics = TaskMetrics.empty)
   extends TaskContext

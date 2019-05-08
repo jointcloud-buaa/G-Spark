@@ -57,7 +57,7 @@ final class ShuffleBlockFetcherIterator(
     shuffleClient: ShuffleClient,
     blockManager: BlockManager,
     blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
-  extraFetch: (Long) => (Long, BlockManagerId, Seq[(BlockId, Long)], Int),
+  extraFetch: Option[Long => (Long, BlockManagerId, Seq[(BlockId, Long)], Int)],
     maxBytesInFlight: Long,
     maxReqsInFlight: Int)
   extends Iterator[(BlockId, InputStream)] with Logging {
@@ -112,7 +112,7 @@ final class ShuffleBlockFetcherIterator(
   /** Current number of requests in flight */
   private[this] var reqsInFlight = 0
 
-  private[this] var nonFinishedExtraBlocks = 0
+  private[this] var nonFinishedExtraBlocks = -1
 
   private[this] val shuffleMetrics = context.taskMetrics().createTempShuffleReadMetrics()
 
@@ -308,16 +308,20 @@ final class ShuffleBlockFetcherIterator(
     fetchLocalBlocks()
     logDebug("Got local blocks in " + Utils.getUsedTimeMs(startTime))
 
-    val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch(requestId.get())
-    requestId.set(rid)
-    // 会在内部更新numBlocksToFetch
-    val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
-    fetchRequests ++= Utils.randomize(extraRemoteRequests)
-    nonFinishedExtraBlocks = nonFinished
+    if (extraFetch.isDefined) {
+      val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch.get(requestId.get())
+      requestId.set(rid)
+      // 会在内部更新numBlocksToFetch
+      val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
+      fetchRequests ++= Utils.randomize(extraRemoteRequests)
+      nonFinishedExtraBlocks = nonFinished
+    }
   }
 
   override def hasNext: Boolean =
-    numBlocksProcessed < numBlocksToFetch || nonFinishedExtraBlocks > 0
+    numBlocksProcessed < numBlocksToFetch ||
+      //                       初始状态                          有远程块未获取
+      (extraFetch.isDefined && (nonFinishedExtraBlocks == -1 || nonFinishedExtraBlocks > 0))
 
   /**
    * Fetches the next (BlockId, InputStream). If a task fails, the ManagedBuffers
@@ -356,8 +360,8 @@ final class ShuffleBlockFetcherIterator(
     fetchUpToMaxBytes()
 
     // 查看是否所有的远程块都已经拉取成功
-    if (nonFinishedExtraBlocks > 0) {
-      val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch(requestId.get())
+    if (extraFetch.isDefined && nonFinishedExtraBlocks > 0) {
+      val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch.get(requestId.get())
       assert(requestId.get() == rid, s"wrong requestId, return $rid, actual need ${requestId.get}")
       assert(extraBlocks.length == nonFinishedExtraBlocks - nonFinished,
         s"wrong blockIds size, actual ${extraBlocks.length}, " +

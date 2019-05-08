@@ -93,7 +93,7 @@ private[spark] class ShuffleMapStage(
     val prevList = outputLocs(stageIdx)
     outputLocs(stageIdx) = status :: prevList
     if (prevList == Nil) {
-      numFinished += status.asInstanceOf[SimpleMapStatus].partitionsLen
+      numFinished += 1
     }
   }
 
@@ -102,7 +102,7 @@ private[spark] class ShuffleMapStage(
     val newList = prevList.filterNot(_.location == bmAddress)
     outputLocs(stageIdx) = newList
     if (prevList != Nil && newList == Nil) {
-      numFinished -= prevList.head.asInstanceOf[SimpleMapStatus].partitionsLen
+      numFinished -= 1
     }
   }
 
@@ -110,7 +110,7 @@ private[spark] class ShuffleMapStage(
    * Returns true if the map stage is ready, i.e. all partitions have shuffle outputs.
    * This should be the same as `outputLocs.contains(Nil)`.
    */
-  def isAvailable: Boolean = numFinished == numPartitions
+  def isAvailable: Boolean = outputLocs != null && numFinished == outputLocs.length
 
   /**
    * Returns an array of [[MapStatus]] (index by partition id). For each partition, the returned

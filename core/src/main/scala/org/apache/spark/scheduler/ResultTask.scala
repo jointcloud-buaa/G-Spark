@@ -69,6 +69,8 @@ private[spark] class ResultTask[T, U](
     if (locs == null) Nil else locs.toSet.toSeq
   }
 
+  override def isFakeTask: Boolean = false
+
   override def runTask(context: TaskContext): U = {
     // Deserialize the RDD and the func using the broadcast variables.
     val threadMXBean = ManagementFactory.getThreadMXBean

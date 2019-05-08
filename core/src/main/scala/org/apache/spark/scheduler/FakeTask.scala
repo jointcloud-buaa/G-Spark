@@ -46,6 +46,8 @@ class FakeTask(
 ) extends Task[MapStatus](stageId, stageAttemptId, partition.index, metrics, localProperties, jobId,
   appId, appAttemptId) with Logging {
 
+  override def isFakeTask: Boolean = true
+
   @transient private val preferredLocs: Seq[TaskLocation] = {
     if (locs == null) Nil else locs.toSet.toSeq // 去重
   }

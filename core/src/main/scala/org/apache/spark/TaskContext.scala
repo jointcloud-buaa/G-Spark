@@ -65,7 +65,7 @@ object TaskContext {
    * An empty task context that does not represent an actual task.  This is only used in tests.
    */
   private[spark] def empty(): TaskContextImpl = {
-    new TaskContextImpl(0, 0, 0, 0, 0, null, new Properties, null)
+    new TaskContextImpl(0, 0, 0, 0, 0, null, new Properties, null, false)
   }
 }
 
@@ -110,6 +110,8 @@ abstract class TaskContext extends Serializable {
    * Exceptions thrown by the listener will result in failure of the task.
    */
   def addTaskCompletionListener(listener: TaskCompletionListener): TaskContext
+
+  def isFakeTask: Boolean
 
   /**
    * Adds a listener in the form of a Scala closure to be executed on task completion.

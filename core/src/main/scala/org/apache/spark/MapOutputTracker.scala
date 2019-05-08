@@ -67,7 +67,8 @@ private[spark] class MapOutputTrackerMasterEndpoint(
 
     case GetRemoteShuffleStatuses(requestId: Long, shuffleId: Int, reduceId: Int) =>
       val hostPort = context.senderAddress.hostPort
-      logInfo(s"Asked to send remote shuffle locations for shuffle $shuffleId to $hostPort")
+      logInfo(s"Asked to send remote shuffle locations for shuffle $shuffleId and " +
+        s"reduce $reduceId with request $requestId to $hostPort")
       tracker.post(GetRemoteShuffleMessage(requestId, shuffleId, reduceId, context))
 
     case StopMapOutputTracker =>

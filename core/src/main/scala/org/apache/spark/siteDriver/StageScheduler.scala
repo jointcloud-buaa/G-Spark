@@ -190,9 +190,7 @@ class StageScheduler(
   }
 
   // TODO-lzp: 改递归为层次遍历
-  private def registerRemoteShuffle(
-    rdd: RDD[_],
-    parts: Array[Int],
+  private def registerRemoteShuffle(rdd: RDD[_], parts: Array[Int],
     buf: MMap[Int, Array[Int]]): Unit = {
     rdd.dependencies.foreach {
       case sdep: ShuffleDependency[_, _, _] =>
@@ -235,9 +233,11 @@ class StageScheduler(
 
     // 这里有两个版本, 一个版本是尽量向同一个BlockManagerId发送尽可能多的请求块
     // 一个则是多次向不同的BlockManagerId发送少量的请求块(当前版本)
-    val buf = MMap.empty[Int, Array[Int]]
+    val buf = MMap.empty[Int, Array[Int]]  // shuffleId -> Array[PartId]
+    // 若Stage为无依赖的Stage，则最后buf还是空的
     registerRemoteShuffle(stage.rdd, parts, buf)
     buf.foreach { case (shuffleId, _parts) =>
+      // 在Stage提交时就远程获取块
       fetchRemoteShuffleStart(shuffleId, _parts, blockMIds)
     }
 

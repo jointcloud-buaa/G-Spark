@@ -42,14 +42,19 @@ private[spark] class BlockStoreShuffleReader[K, C](
 
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
+    val func = if (context.isFakeTask) {
+      None
+    } else {
+      Some((requestId: Long) => mapOutputTracker.asInstanceOf[MapOutputTrackerWorker]
+        .getRemoteShuffleStatuses(requestId, handle.shuffleId, startPartition))
+    }
     val blockFetcherItr = new ShuffleBlockFetcherIterator(
       context,
       blockManager.shuffleClient,
       blockManager,
       mapOutputTracker.asInstanceOf[MapOutputTrackerWorker]
         .getMapSizesByExecutorId(handle.shuffleId, startPartition, endPartition),
-      (requestId: Long) => mapOutputTracker.asInstanceOf[MapOutputTrackerWorker]
-          .getRemoteShuffleStatuses(requestId, handle.shuffleId, startPartition),
+      func,
       // Note: we use getSizeAsMb when no suffix is provided for backwards compatibility
       SparkEnv.get.conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024,
       SparkEnv.get.conf.getInt("spark.reducer.maxReqsInFlight", Int.MaxValue))
