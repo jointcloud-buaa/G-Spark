@@ -18,6 +18,7 @@
 package org.apache.spark.scheduler
 
 import java.io.{Externalizable, ObjectInput, ObjectOutput}
+import java.util.Arrays
 
 import org.roaringbitmap.RoaringBitmap
 
@@ -208,6 +209,8 @@ private[spark] class SingleMapStatus(
 
   override def getSizeForBlock(reduceId: Int): Long =
     if (reduceId == partitionId) len else 0
+
+  override def toString: String = s"SingleMapStatus($blockManagerId, $partitionId, $len)"
 }
 
 private[spark] class SimpleMapStatus(bmId: BlockManagerId, sizes: Array[Long])
@@ -218,4 +221,6 @@ private[spark] class SimpleMapStatus(bmId: BlockManagerId, sizes: Array[Long])
   override def getSizeForBlock(reduceId: Int): Long = sizes(reduceId)
 
   def partitionsLen: Int = sizes.length
+
+  override def toString: String = s"SimpleMapStatus($bmId, ${Arrays.toString(sizes)})"
 }

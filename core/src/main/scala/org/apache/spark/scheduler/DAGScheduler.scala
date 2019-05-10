@@ -1054,6 +1054,11 @@ class DAGScheduler(
         partitionsToCompute.map(r.partitions)
     }
 
+    logInfo(
+      s"""##lizp##:
+         |$dataDistState
+         |$bwDistState""".stripMargin)
+
     // TODO-lzp: 如何没有启动SiteDriver呢？？
     val allHosts = clusterToHost.values.toArray
 
@@ -1094,6 +1099,9 @@ class DAGScheduler(
         sms.initOutputLocs(hostToParts.size)
       case _ =>
     }
+
+    val log = hostToParts.map{case (host, parts) => s"""$host: ${parts.mkString(",")}"""}
+    logInfo(s"""##lizp##: build stage description: $log""")
 
     val desc = hostToParts.zipWithIndex.map { case ((host, parts), idx) =>
       stageIdToIdxWithParts(stage.id)(idx) = parts.toArray

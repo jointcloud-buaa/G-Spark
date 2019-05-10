@@ -241,6 +241,7 @@ private[spark] class SiteContext(
       }
 
     env.blockManager.initialize(_siteAppId)
+    env.blockManager.setStageScheduler(_stageScheduler)
 
     // 让mapOutputTracker知晓SiteDriver's blockManagerId
     env.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster]

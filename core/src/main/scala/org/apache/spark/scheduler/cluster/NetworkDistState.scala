@@ -22,7 +22,14 @@ case class NetworkDistState(
   idxMap: Map[String, Int],
   bws: Array[Array[Long]],  // Bps, 字节每秒
   latencies: Array[Array[Int]]  // ms, 毫秒
-)
+) {
+  override def toString: String =
+    s"""NetworkDistState:
+       |  idxMap: $idxMap,
+       |  bws: ${bws.map(_.mkString(",")).mkString("||")},
+       |  latencies: ${latencies.map(_.mkString(",")).mkString("||")}
+     """.stripMargin
+}
 
 object NetworkDistState {
   // 空意味着节点到节点的网速是均匀的  TODO-lzp: 不确定是不是应该无限大, 还是给个有限的值

@@ -17,13 +17,12 @@
 
 package org.apache.spark.siteDriver
 
-import java.io.{File, IOException, NotSerializableException}
-import java.nio.ByteBuffer
+import java.io.{File, NotSerializableException}
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 
 import scala.annotation.tailrec
-import scala.collection.{mutable, Map}
+import scala.collection.Map
 import scala.collection.mutable.{HashMap, HashSet, Map => MMap}
 import scala.concurrent.duration._
 import scala.language.existentials
@@ -35,12 +34,15 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
+import org.apache.spark.network.buffer.ManagedBuffer
+import org.apache.spark.network.shuffle.BlockFetchingListener
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, FakeStage, FakeTask, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SimpleMapStatus, SingleMapStatus, SparkListenerExecutorMetricsUpdate, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
+import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.storage._
-import org.apache.spark.storage.BlockManagerMessages.{BlockManagerHeartbeat, BlockManagerSiteHeartbeat}
+import org.apache.spark.storage.BlockManagerMessages.BlockManagerSiteHeartbeat
 import org.apache.spark.util._
 
 private[spark]
@@ -87,6 +89,8 @@ class StageScheduler(
   private[siteDriver] val waitingStages = new HashSet[Stage]
   private[siteDriver] val failedStages = new HashSet[Stage]
   private[siteDriver] val shuffleIdToMapStage = new HashMap[Int, ShuffleMapStage]
+
+  private[siteDriver] val shuffleIdToSerInstance = new HashMap[Int, SerializerInstance]()
 
   // Application dependencies (added through SparkContext) that we've fetched so far on this node.
   // Each map holds the master's timestamp for the version of that file or JAR we got.
@@ -200,6 +204,8 @@ class StageScheduler(
     }
   }
 
+  def getShuffleSerInstance(shuffleId: Int): SerializerInstance = shuffleIdToSerInstance(shuffleId)
+
   def stageSubmitted(stageDesc: StageDescription): Unit = {
     val stageId = stageDesc.stageId
     val subStageIdx = stageDesc.index
@@ -228,6 +234,8 @@ class StageScheduler(
         registerRDD(sms.fakeRDD, (0 until sms.shuffleDep.partitioner.numPartitions).toArray)
         // 让shuffleDep知道其ShuffleMapStage的处理的分区个数
         sms.shuffleDep.siteMapPartsLen = parts.length
+        // 注册shuffleId到serilizerInstance的映射
+        shuffleIdToSerInstance(sms.shuffleDep.shuffleId) = sms.shuffleDep.serializer.newInstance()
       case _ =>
     }
 
@@ -236,9 +244,14 @@ class StageScheduler(
     val buf = MMap.empty[Int, Array[Int]]  // shuffleId -> Array[PartId]
     // 若Stage为无依赖的Stage，则最后buf还是空的
     registerRemoteShuffle(stage.rdd, parts, buf)
-    buf.foreach { case (shuffleId, _parts) =>
-      // 在Stage提交时就远程获取块
-      fetchRemoteShuffleStart(shuffleId, _parts, blockMIds)
+    if (buf.nonEmpty) {
+      // TODO-lzp: 还是应该在GD与SD间使用MapOutputTracker，一方面可以进行空块过滤，一方面可以使用有哪些bmId
+      buf.keys.foreach { shuffleId =>
+        blockMIds.foreach( bmId => mapOutputTracker.initRemoteShuffle(shuffleId, bmId))
+      }
+      blockMIds.foreach { bmId =>
+        fetchRemoteShuffleStart(buf.toMap, bmId)
+      }
     }
 
     stageIdToStage(stage.id) = stage
@@ -248,19 +261,37 @@ class StageScheduler(
 
   // TODO-lzp: 增加重试机制
   def fetchRemoteShuffleStart(
-    shuffleId: Int,
-    parts: Array[Int],
-    blockMIds: Array[BlockManagerId]): Unit = {
+    shuffleIdToParts: Map[Int, Array[Int]], blockMId: BlockManagerId): Unit = {
 
-    val fetchStatus = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)
-
-    blockMIds.foreach { blockMId =>
-      // 因为在registerRemoteShuffle后, 对任意BlockManagerId, 其都有默认的Array[(Boolean, Long)]
-      val partResults = fetchStatus(blockMId)
-      val blockIds = parts.filterNot(id => partResults(id)._1)
-        .map(p => RemoteShuffleBlockId(shuffleId, p)).map(_.asInstanceOf[BlockId])
-      SiteShuffleBlockFetcher.fetchRemoteShuffleBlock(blockMId, blockIds)
+    val blockIds = shuffleIdToParts.flatMap { case (shuffleId, parts) =>
+      val partResults = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)(blockMId)
+      parts.filterNot(id => partResults(id)._1).map(p => RemoteShuffleBlockId(shuffleId, p))
     }
+
+    val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
+
+    env.blockManager.shuffleClient.fetchBlocks(
+      blockMId.host, blockMId.port, blockMId.executorId, blockIds.toArray.map(_.toString),
+      new BlockFetchingListener {
+        override def onBlockFetchSuccess(blockId: String, data: ManagedBuffer): Unit = {
+          val newBlockId = BlockId(blockId).asInstanceOf[RemoteShuffleBlockId]
+          val hostBlockId = HostAwareShuffleBlockId(
+            blockMId.hostPort, newBlockId.shuffleId, newBlockId.reduceId)
+          val serInstance = shuffleIdToSerInstance(newBlockId.shuffleId)
+          val rst = SiteShuffleBlockFetcherUtils.writeAsBlockFile(
+            hostBlockId, data, fileBufferSize,
+            serializerInstance = serInstance
+          )
+          mapOutputTracker.registerRemoteShuffleFetchResult(
+            newBlockId.shuffleId, newBlockId.reduceId, blockMId, rst
+          )
+        }
+
+        override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
+          logInfo(s"fetch $blockId failed, because of $exception")
+        }
+      }
+    )
   }
 
   /**
@@ -771,6 +802,8 @@ class StageScheduler(
               // 报告结果, 向mapOutput注册想了想还是在GD中进行吧
               val bmId = env.blockManager.blockManagerId
               // 考虑到每个mapStatus都只有一个分区有大小, 此处合并所有的singleMapStatus
+              // 如果是分阶段的执行FakeTask，则FakeTask执行后，每个FakeTask的输出都是有多个分区的，则
+              // 此处要将每个分区相加
               val sizes = fakeStage.getPartResults.zipWithIndex.map{ case (res, idx) =>
                   res.asInstanceOf[SingleMapStatus].getSizeForBlock(idx)
               }

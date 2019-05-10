@@ -73,4 +73,8 @@ public class NettyManagedBuffer extends ManagedBuffer {
       .add("buf", buf)
       .toString();
   }
+
+  public int refCnt() {
+    return buf.refCnt();
+  }
 }

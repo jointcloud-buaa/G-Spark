@@ -391,6 +391,8 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   protected val mapStatuses = new ConcurrentHashMap[Int, MMap[Int, MapStatus]]().asScala
   private val cachedSerializedStatuses = new ConcurrentHashMap[Int, Array[Byte]]().asScala
 
+  // requestId -> set(BlockManagerId), requestId是每个Task执行时的唯一ID，而每个Task都有确定的分区
+  // TODO-lzp: 当任务完成时， 应该删除对应requestId
   private val requestIdToBmIds =
     new ConcurrentHashMap[Long, mutable.HashSet[BlockManagerId]]().asScala
 
@@ -476,7 +478,7 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
                     Some((HostAwareShuffleBlockId(bmId.hostPort, shuffleId, reduceId), sp._2))
                   }
                 }.toSeq
-                context.reply((sdriverBlockManagerId, blockIds, nonFinished))
+                context.reply((newRequestId, sdriverBlockManagerId, blockIds, nonFinished))
             }
           } catch {
             case NonFatal(e) => logError(e.getMessage, e)
@@ -510,10 +512,22 @@ private[spark] class MapOutputTrackerMaster(val conf: SparkConf,
   }
 
   def registerRemoteShuffle(shuffleId: Int, partsNum: Int): Unit = {
+    logInfo(
+      s"""##lizp##: register remote shuffle
+         |$shuffleId, $partsNum
+       """.stripMargin)
     if (remoteShuffleFetchStatus.put(shuffleId,
-      MMap.empty[BlockManagerId, Array[(Boolean, Long)]].withDefaultValue(Array.ofDim(partsNum))
+      MMap.empty[BlockManagerId, Array[(Boolean, Long)]]
+        .withDefaultValue(Array.fill(partsNum)(false -> 0))
     ).isDefined) {
       throw new IllegalArgumentException("Remote Shuffle ID " + shuffleId + " registered twice")
+    }
+  }
+
+  def initRemoteShuffle(shuffleId: Int, bmId: BlockManagerId): Unit = {
+    val m = remoteShuffleFetchStatus(shuffleId)
+    if (!m.contains(bmId)) {
+      m(bmId) = m(bmId)
     }
   }
 
