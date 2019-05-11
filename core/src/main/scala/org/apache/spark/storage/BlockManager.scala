@@ -155,10 +155,6 @@ private[spark] class BlockManager(
 
   private var blockReplicationPolicy: BlockReplicationPolicy = _
 
-  private var stageScheduler: StageScheduler = _
-
-  def setStageScheduler(stageSche: StageScheduler): Unit = stageScheduler = stageSche
-
   /**
    * Initializes the BlockManager with the given appId. This is not performed in the constructor as
    * the appId may not be known at BlockManager instantiation time (in particular for the driver,
@@ -313,7 +309,9 @@ private[spark] class BlockManager(
         logInfo(s"##lizp##: fetch host aware shuffle blockId: $hasbId")
         shuffleManager.shuffleBlockResolver.getRemoteShuffleBlockData(hasbId)
       case rmtId: RemoteShuffleBlockId =>
-        val mapStatus = mapOutputTracker.getStatuses(rmtId.shuffleId)(rmtId.reduceId)
+        // TODO-lzp: 当FakeTask改为多批次处理时，此处需要修改，到时候可能要在此处再执行一次数据聚合
+        val mapStatus = mapOutputTracker.asInstanceOf[MapOutputTrackerMasterRole]
+          .getStatuses(rmtId.shuffleId)(rmtId.reduceId)
         val loc = mapStatus.location
         new ProxyManagedBuffer(rmtId, loc, shuffleClient)
       case _ =>

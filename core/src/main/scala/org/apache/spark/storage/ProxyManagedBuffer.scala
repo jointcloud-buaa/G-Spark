@@ -43,6 +43,7 @@ class ProxyManagedBuffer(
         data.retain()
         realBuf.success(data)
       }
+      // TODO-lzp: 思考如何增加块获取失败后的重试，和异常处理
       override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
         realBuf.failure(exception)
       }

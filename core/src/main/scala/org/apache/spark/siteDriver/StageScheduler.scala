@@ -287,6 +287,7 @@ class StageScheduler(
           )
         }
 
+        // TODO-lzp: 在块获取失败后，应该思考下如何处理,增加重试或异常
         override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
           logInfo(s"fetch $blockId failed, because of $exception")
         }
@@ -824,6 +825,7 @@ class StageScheduler(
         logInfo("Resubmitted " + task + ", so marking it as still running")
         stage.pendingPartitions += task.partitionId
 
+        // TODO-lzp: 关于Stage的出错恢复重试机制还没相好
       case FetchFailed(bmAddress, shuffleId, mapId, reduceId, failureMessage) =>
         val failedStage = stageIdToStage(task.stageId)
         val mapStage = shuffleIdToMapStage(shuffleId)

@@ -314,7 +314,7 @@ private[spark] class Executor(
         }
 
         logDebug("Task " + taskId + "'s epoch is " + task.epoch)
-        env.mapOutputTracker.updateEpoch(task.epoch)
+        env.mapOutputTracker.asInstanceOf[MapOutputTrackerWorkerRole].updateCachedEpoch(task.epoch)
 
         // Run the actual task and measure its runtime.
         taskStart = System.currentTimeMillis()

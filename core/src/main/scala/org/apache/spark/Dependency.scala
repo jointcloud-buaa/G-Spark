@@ -76,6 +76,7 @@ class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val mapSideCombine: Boolean = false)
   extends Dependency[Product2[K, V]] {
 
+  // TODO-lzp: 有点丑陋，保存分发给某集群的map分区个数, 在决定是否计算位置偏好时使用
   var siteMapPartsLen: Int = _
 
   override def rdd: RDD[Product2[K, V]] = _rdd.asInstanceOf[RDD[Product2[K, V]]]

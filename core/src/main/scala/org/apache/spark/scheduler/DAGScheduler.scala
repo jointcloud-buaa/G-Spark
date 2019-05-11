@@ -235,9 +235,8 @@ class DAGScheduler(
     } else {
       rdd.dependencies.foreach {
         case sdep: ShuffleDependency[_, _, _] =>  // shuffle依赖, 通过mapOutputTracker提供
-          // 需要声明的是, MapOutputTracker的MapStatus保存的size并非精确的值
-          for ((k, v) <- mapOutputTracker.getDataDist(sdep, split)) {
-            rst(k) = rst.getOrElse[Long](k, 0) + v
+          mapOutputTracker.getDataDist(sdep, split).foreach {dataDist =>
+            for ((k, v) <- dataDist) rst(k) = rst.getOrElse[Long](k, 0) + v
           }
         case ndep: NarrowDependency[_] =>  // 窄依赖, 则获取子分区的所有父分区
           ndep.getParents(split).foreach { psplit =>
@@ -398,7 +397,7 @@ class DAGScheduler(
       // A previously run stage generated partitions for this shuffle, so for each output
       // that's still available, copy information about that output location to the new stage
       // (so we don't unnecessarily re-compute that data).
-      val locs = mapOutputTracker.getMapOutputStatuses(shuffleDep.shuffleId)
+      val locs = mapOutputTracker.getStatuses(shuffleDep.shuffleId)
       locs.foreach { case (stageIdx, status) =>
           if (status ne null) stage.addOutputLoc(stageIdx, status)
       }

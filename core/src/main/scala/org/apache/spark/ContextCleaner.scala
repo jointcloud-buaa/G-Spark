@@ -273,7 +273,7 @@ private[spark] class ContextCleaner(sc: ComponentContext) extends Logging {
 
   private def blockManagerMaster = sc.env.blockManager.master
   private def broadcastManager = sc.env.broadcastManager
-  private def mapOutputTracker = sc.env.mapOutputTracker
+  private def mapOutputTracker = sc.env.mapOutputTracker.asInstanceOf[MapOutputTrackerMasterRole]
 }
 
 private object ContextCleaner {

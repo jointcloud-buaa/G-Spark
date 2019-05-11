@@ -204,14 +204,13 @@ object SparkEnv extends Logging {
     // TODO-IMP: 此处的1st参数, 至少在当前实现中, 没有用
     val broadcastManager = new BroadcastManager(true, conf, securityManager)
 
-    val mapOutputTracker = new MapOutputTrackerGlobalMaster(conf)
+    val mapOutputTracker = new MapOutputTrackerGlobalMaster(conf, broadcastManager, isLocal)
     logInfo("Registering " + MapOutputTracker.ENDPOINT_NAME)
-    // TODO-lzp: 目前没想到MOTGM需要跟谁通信
-//    mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
-//      MapOutputTracker.ENDPOINT_NAME,
-//      new MapOutputTrackerMasterEndpoint(
-//        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf)
-//    )
+    mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
+      MapOutputTracker.ENDPOINT_NAME,
+      new MapOutputTrackerMasterEndpoint(
+        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMasterRole], conf)
+    )
 
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
@@ -305,11 +304,19 @@ object SparkEnv extends Logging {
     val broadcastManager = new BroadcastManager(true, conf, securityManager)
 
     val mapOutputTracker = new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
+    // 设定自己的MOTMaster的trackerEndpoint
     mapOutputTracker.trackerEndpoint = rpcEnv.setupEndpoint(
       MapOutputTracker.ENDPOINT_NAME,
       new MapOutputTrackerMasterEndpoint(
-        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf
+        rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMasterRole], conf
       )
+    )
+    // 设定MOTGlobalMaster的trackerEndpoint
+    mapOutputTracker.masterTrackerEndpoint = RpcUtils.makeRef(
+      MapOutputTracker.ENDPOINT_NAME,
+      conf.get("spark.globalDriver.host", "localhost"),
+      conf.getInt("spark.globalDriver.port", 7077),
+      rpcEnv
     )
 
     val shortShuffleMgrNames = Map(
@@ -419,8 +426,8 @@ object SparkEnv extends Logging {
     // 此处的1st参数, 至少在当前实现中, 没有用
     val broadcastManager = new BroadcastManager(false, conf, securityManager)
 
-    val mapOutputTracker = new MapOutputTrackerWorker(conf)
-    mapOutputTracker.trackerEndpoint = RpcUtils.makeRef(
+    val mapOutputTracker = new MapOutputTrackerWorker
+    mapOutputTracker.masterTrackerEndpoint = RpcUtils.makeRef(
       MapOutputTracker.ENDPOINT_NAME,
       conf.get("spark.siteDriver.host", "localhost"),
       conf.getInt("spark.siteDriver.port", 7077),
