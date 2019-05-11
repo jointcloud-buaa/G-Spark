@@ -22,6 +22,7 @@ import java.util.{HashMap => JHashMap}
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success}
 
 import org.apache.spark.SparkConf
 import org.apache.spark.annotation.DeveloperApi
@@ -102,26 +103,52 @@ class BlockManagerMasterEndpoint(
     case GetMatchingBlockIds(filter, askSlaves) =>
       context.reply(getMatchingBlockIds(filter, askSlaves))
 
-    case RemoveRdd(rddId) =>
-      context.reply(removeRdd(rddId))
+    case RemoveRdd(rddId, level) =>
+      // 这里做区分主要是，SlaveEndpoint返回的是Int，但是MasterEndpoint返回的是Future[Seq[Int]]
+      // 因此，在一级级地往下传播消息后，再将值一级级往上返回的过程中，需要统一下返回值的类型
+      if (level == 0) {
+        context.reply(removeRdd(rddId, level))
+      } else {  // 在第二及更高级，应该将返回的结果聚合后再往上返回
+        removeRdd(rddId, level).onComplete {
+          case Success(values) => context.reply(values.sum)
+          case Failure(e) => context.sendFailure(e)
+        }
+      }
 
-    case RemoveShuffle(shuffleId) =>
-      context.reply(removeShuffle(shuffleId))
+    case RemoveShuffle(shuffleId, level) =>
+      if (level == 0) {
+        context.reply(removeShuffle(shuffleId, level))
+      } else {  // 在回传结果时，进行聚合
+        removeShuffle(shuffleId, level).onComplete {
+          case Success(values) => context.reply(values.forall(v => v))
+          case Failure(e) => context.sendFailure(e)
+        }
+      }
 
-    case RemoveBroadcast(broadcastId, removeFromDriver) =>
-      context.reply(removeBroadcast(broadcastId, removeFromDriver))
+    case RemoveBroadcast(broadcastId, removeFromDriver, level) =>
+      // TODO-lzp: 如何指定传播的级别
+      if (level == 1) {  // 目前在一级处，就将广播中断
+        // 返回Int, 相当于代理了本地的SlaveEndpoint
+        removeLocalBroadcast(broadcastId).onComplete {
+          case Success(value) => context.reply(value)
+          case Failure(exception) => context.sendFailure(exception)
+        }
+      } else {
+        // 返回Future[Seq[Int]]
+        context.reply(removeBroadcast(broadcastId, removeFromDriver, level))
+      }
 
-    case RemoveBlock(blockId) =>
-      removeBlockFromWorkers(blockId)
+    case RemoveBlock(blockId, level) =>
+      removeBlockFromWorkers(blockId, level)
       context.reply(true)
 
     case RemoveExecutor(execId) =>
       removeExecutor(execId)
       context.reply(true)
 
-      // TODO-lzp: remove sd from blockmanagermaster
     case RemoveSiteDriver(sdriverId) =>
-      logInfo("#lizp#: received RemoveSiteDriver. Do nothing now")
+      removeSiteDriver(sdriverId)
+      context.reply(true)
 
     case StopBlockManagerMaster =>
       context.reply(true)
@@ -146,12 +173,14 @@ class BlockManagerMasterEndpoint(
       }
   }
 
-  private def removeRdd(rddId: Int): Future[Seq[Int]] = {
+  private def removeRdd(rddId: Int, level: Int): Future[Seq[Int]] = {
     // First remove the metadata for the given RDD, and then asynchronously remove the blocks
     // from the slaves.
 
     // Find all blocks for the given RDD, remove the block from both blockLocations and
     // the blockManagerInfo that is tracking the blocks.
+    // 移除本地保存的一些块的追踪信息
+    //                                              asRDDId为Option[RDDBlockId], 所以需要flatMap
     val blocks = blockLocations.asScala.keys.flatMap(_.asRDDId).filter(_.rddId == rddId)
     blocks.foreach { blockId =>
       val bms: mutable.HashSet[BlockManagerId] = blockLocations.get(blockId)
@@ -161,18 +190,18 @@ class BlockManagerMasterEndpoint(
 
     // Ask the slaves to remove the RDD, and put the result in a sequence of Futures.
     // The dispatcher is used as an implicit argument into the Future sequence construction.
-    val removeMsg = RemoveRdd(rddId)
+    val removeMsg = RemoveRdd(rddId, level + 1)
     Future.sequence(
       blockManagerInfo.values.map { bm =>
+        // 这里也有一级级下传的递归意思
         bm.slaveEndpoint.ask[Int](removeMsg)
       }.toSeq
     )
   }
 
-  // TODO-lzp: 原则上，此处应该是在GD中，消息也是发送给SD的slaveRef而非masterRef
-  private def removeShuffle(shuffleId: Int): Future[Seq[Boolean]] = {
+  private def removeShuffle(shuffleId: Int, level: Int): Future[Seq[Boolean]] = {
     // Nothing to do in the BlockManagerMasterEndpoint data structures
-    val removeMsg = RemoveShuffle(shuffleId)
+    val removeMsg = RemoveShuffle(shuffleId, level + 1)
     Future.sequence(
       blockManagerInfo.values.map { bm =>
         bm.slaveEndpoint.ask[Boolean](removeMsg)
@@ -185,16 +214,32 @@ class BlockManagerMasterEndpoint(
    * of all broadcast blocks. If removeFromDriver is false, broadcast blocks are only removed
    * from the executors, but not from the driver.
    */
-  private def removeBroadcast(broadcastId: Long, removeFromDriver: Boolean): Future[Seq[Int]] = {
-    val removeMsg = RemoveBroadcast(broadcastId, removeFromDriver)
+  private def removeBroadcast(
+    broadcastId: Long, removeFromDriver: Boolean, level: Int): Future[Seq[Int]] = {
+    val removeMsg = RemoveBroadcast(broadcastId, removeFromDriver, level + 1)
     val requiredBlockManagers = blockManagerInfo.values.filter { info =>
-      removeFromDriver || !info.blockManagerId.isDriver
+      removeFromDriver ||
+        (Utils.isGDriver(execId) && !info.blockManagerId.isDriver) ||
+        (Utils.isSDriver(execId) && !info.blockManagerId.isSiteDriver)
     }
     Future.sequence(
       requiredBlockManagers.map { bm =>
+        // 向普通的slaveEndpoint发送，返回Int
+        // 因此，要保证在向masterEndpoint发送，在广播层级达到要求后，其也要返回Int
         bm.slaveEndpoint.ask[Int](removeMsg)
       }.toSeq
     )
+  }
+
+  // 发送给本地的SlaveEndpoint
+  private def removeLocalBroadcast(broadcastId: Long): Future[Int] = {
+    // 后两个元素并不重要
+    val removeMsg = RemoveBroadcast(broadcastId, false, -1)
+    val localEndpoint = blockManagerInfo.values.filter { info =>
+      (Utils.isGDriver(execId) && info.blockManagerId.isDriver) ||
+        (Utils.isSDriver(execId) && info.blockManagerId.isSiteDriver)
+    }.head
+    localEndpoint.slaveEndpoint.ask[Int](removeMsg)
   }
 
   private def removeBlockManager(blockManagerId: BlockManagerId) {
@@ -224,6 +269,11 @@ class BlockManagerMasterEndpoint(
     blockManagerIdByExecutor.get(execId).foreach(removeBlockManager)
   }
 
+  private def removeSiteDriver(execId: String): Unit = {
+    logInfo("Trying to remove siteDriver " + execId + " from BlockManagerMaster.")
+    blockManagerIdByExecutor.get(execId).foreach(removeBlockManager)
+  }
+
   /**
    * Return true if the driver knows about the given block manager. Otherwise, return false,
    * indicating that the block manager should re-register.
@@ -248,7 +298,8 @@ class BlockManagerMasterEndpoint(
 
   // Remove a block from the slaves that have it. This can only be used to remove
   // blocks that the master knows about.
-  private def removeBlockFromWorkers(blockId: BlockId) {
+  // 这里很有意思，如果是GD，则此处的slaveEndpoint是SD的driverEndpoint，然后又会回到这里，一级级传递下去
+  private def removeBlockFromWorkers(blockId: BlockId, level: Int) {
     val locations = blockLocations.get(blockId)
     if (locations != null) {
       locations.foreach { blockManagerId: BlockManagerId =>
@@ -257,7 +308,8 @@ class BlockManagerMasterEndpoint(
           // Remove the block from the slave's BlockManager.
           // Doesn't actually wait for a confirmation and the message might get lost.
           // If message loss becomes frequent, we should add retry logic here.
-          blockManager.get.slaveEndpoint.ask[Boolean](RemoveBlock(blockId))
+          // 这里也有意思，GD的slaveEndpoint是SlaveEndpoint，而SD的slaveEndpoint是MasterEndpoint
+          blockManager.get.slaveEndpoint.ask[Boolean](RemoveBlock(blockId, level + 1))
         }
       }
     }
@@ -425,7 +477,11 @@ class BlockManagerMasterEndpoint(
   private def getPeers(blockManagerId: BlockManagerId): Seq[BlockManagerId] = {
     val blockManagerIds = blockManagerInfo.keySet
     if (blockManagerIds.contains(blockManagerId)) {
-      blockManagerIds.filterNot { _.isDriver }.filterNot { _ == blockManagerId }.toSeq
+      blockManagerIds.filterNot { bmId =>
+        // 当前节点是GD，则过滤GD, 当前节点是SD，则过滤SD
+        (Utils.isGDriver(execId) && bmId.isDriver) ||
+          (Utils.isSDriver(execId) && bmId.isSiteDriver)
+      }.filterNot { _ == blockManagerId }.toSeq
     } else {
       Seq.empty
     }

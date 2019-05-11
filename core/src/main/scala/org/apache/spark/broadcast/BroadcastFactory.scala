@@ -38,8 +38,9 @@ private[spark] trait BroadcastFactory {
    * @param value value to broadcast
    * @param isLocal whether we are in local mode (single JVM process)
    * @param id unique id representing this broadcast variable
+   * @param levels 指定此广播变量可传播的级别
    */
-  def newBroadcast[T: ClassTag](value: T, isLocal: Boolean, id: Long): Broadcast[T]
+  def newBroadcast[T: ClassTag](value: T, isLocal: Boolean, id: Long, levels: Int = 1): Broadcast[T]
 
   def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean): Unit
 

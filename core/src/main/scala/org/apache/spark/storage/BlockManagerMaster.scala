@@ -47,6 +47,7 @@ class BlockManagerMaster(
   }
 
   /** Remove a dead executor from the driver endpoint. This is only called on the driver side. */
+  // 只在SD中执行
   def removeExecutor(execId: String) {
     tell(RemoveExecutor(execId))
     logInfo("Removed " + execId + " successfully in removeExecutor")
@@ -79,6 +80,7 @@ class BlockManagerMaster(
     val updatedId = driverEndpoint.askWithRetry[BlockManagerId](
       RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint))
     logInfo(s"Registered BlockManager $updatedId for $obj")
+    // 对于SiteDriver，除了向自己注册外，还要向GD注册，此处的ref为SD的driverEndpoint，而非slaveEndpoint
     if (gdriverRef != null && Utils.isSDriver(execId)) {
       logInfo(s"Registering BlockManager $blockManagerId for GlobalBlockManager")
       gdriverRef.askWithRetry[BlockManagerId](
@@ -95,7 +97,8 @@ class BlockManagerMaster(
       storageLevel: StorageLevel,
       memSize: Long,
       diskSize: Long): Boolean = {
-    val res = driverEndpoint.askWithRetry[Boolean](
+    val ref = if (Utils.isSDriver(execId)) gdriverRef else driverEndpoint
+    val res = ref.askWithRetry[Boolean](
       UpdateBlockInfo(blockManagerId, blockId, storageLevel, memSize, diskSize))
     logDebug(s"Updated info of block $blockId")
     res
@@ -103,13 +106,15 @@ class BlockManagerMaster(
 
   /** Get locations of the blockId from the driver */
   def getLocations(blockId: BlockId): Seq[BlockManagerId] = {
-    driverEndpoint.askWithRetry[Seq[BlockManagerId]](GetLocations(blockId))
+    val ref = if (Utils.isSDriver(execId)) gdriverRef else driverEndpoint
+    ref.askWithRetry[Seq[BlockManagerId]](GetLocations(blockId))
   }
 
   /** Get locations of multiple blockIds from the driver */
   def getLocations(blockIds: Array[BlockId]): IndexedSeq[Seq[BlockManagerId]] = {
-    driverEndpoint.askWithRetry[IndexedSeq[Seq[BlockManagerId]]](
-      GetLocationsMultipleBlockIds(blockIds))
+    val ref = if (Utils.isSDriver(execId)) gdriverRef else driverEndpoint
+    ref.askWithRetry[IndexedSeq[Seq[BlockManagerId]]](
+        GetLocationsMultipleBlockIds(blockIds))
   }
 
   /**
@@ -126,7 +131,8 @@ class BlockManagerMaster(
   }
 
   def getExecutorEndpointRef(executorId: String): Option[RpcEndpointRef] = {
-    driverEndpoint.askWithRetry[Option[RpcEndpointRef]](GetExecutorEndpointRef(executorId))
+    val ref = if (Utils.isSDriver(execId)) gdriverRef else driverEndpoint
+    ref.askWithRetry[Option[RpcEndpointRef]](GetExecutorEndpointRef(executorId))
   }
 
   /**
@@ -134,12 +140,12 @@ class BlockManagerMaster(
    * blocks that the driver knows about.
    */
   def removeBlock(blockId: BlockId) {
-    driverEndpoint.askWithRetry[Boolean](RemoveBlock(blockId))
+    driverEndpoint.askWithRetry[Boolean](RemoveBlock(blockId, 0))
   }
 
   /** Remove all blocks belonging to the given RDD. */
   def removeRdd(rddId: Int, blocking: Boolean) {
-    val future = driverEndpoint.askWithRetry[Future[Seq[Int]]](RemoveRdd(rddId))
+    val future = driverEndpoint.askWithRetry[Future[Seq[Int]]](RemoveRdd(rddId, 0))
     future.onFailure {
       case e: Exception =>
         logWarning(s"Failed to remove RDD $rddId - ${e.getMessage}", e)
@@ -151,7 +157,8 @@ class BlockManagerMaster(
 
   /** Remove all blocks belonging to the given shuffle. */
   def removeShuffle(shuffleId: Int, blocking: Boolean) {
-    val future = driverEndpoint.askWithRetry[Future[Seq[Boolean]]](RemoveShuffle(shuffleId))
+    // 虽然要返回值，但是其实并没有使用
+    val future = driverEndpoint.askWithRetry[Future[Seq[Boolean]]](RemoveShuffle(shuffleId, 0))
     future.onFailure {
       case e: Exception =>
         logWarning(s"Failed to remove shuffle $shuffleId - ${e.getMessage}", e)
@@ -164,7 +171,7 @@ class BlockManagerMaster(
   /** Remove all blocks belonging to the given broadcast. */
   def removeBroadcast(broadcastId: Long, removeFromMaster: Boolean, blocking: Boolean) {
     val future = driverEndpoint.askWithRetry[Future[Seq[Int]]](
-      RemoveBroadcast(broadcastId, removeFromMaster))
+      RemoveBroadcast(broadcastId, removeFromMaster, 0))
     future.onFailure {
       case e: Exception =>
         logWarning(s"Failed to remove broadcast $broadcastId" +
@@ -197,6 +204,7 @@ class BlockManagerMaster(
    * updated block statuses. This is useful when the master is not informed of the given block
    * by all block managers.
    */
+  // 全是测试的代码
   def getBlockStatus(
       blockId: BlockId,
       askSlaves: Boolean = true): Map[BlockManagerId, BlockStatus] = {

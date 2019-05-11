@@ -28,18 +28,20 @@ private[spark] object BlockManagerMessages {
   //////////////////////////////////////////////////////////////////////////////////
   sealed trait ToBlockManagerSlave
 
+  // level表示当前的传播层级，从BlockManagerMaster发送时，为初始值0，每往下传播一次则加1
+
   // Remove a block from the slaves that have it. This can only be used to remove
   // blocks that the master knows about.
-  case class RemoveBlock(blockId: BlockId) extends ToBlockManagerSlave
+  case class RemoveBlock(blockId: BlockId, level: Int) extends ToBlockManagerSlave
 
   // Remove all blocks belonging to a specific RDD.
-  case class RemoveRdd(rddId: Int) extends ToBlockManagerSlave
+  case class RemoveRdd(rddId: Int, level: Int) extends ToBlockManagerSlave
 
   // Remove all blocks belonging to a specific shuffle.
-  case class RemoveShuffle(shuffleId: Int) extends ToBlockManagerSlave
+  case class RemoveShuffle(shuffleId: Int, level: Int) extends ToBlockManagerSlave
 
   // Remove all blocks belonging to a specific broadcast.
-  case class RemoveBroadcast(broadcastId: Long, removeFromDriver: Boolean = true)
+  case class RemoveBroadcast(broadcastId: Long, removeFromDriver: Boolean = true, level: Int)
     extends ToBlockManagerSlave
 
   /**

@@ -52,8 +52,8 @@ private[spark] class BroadcastManager(
 
   private val nextBroadcastId = new AtomicLong(0)
 
-  def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
-    broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.getAndIncrement())
+  def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean, levels: Int = 1): Broadcast[T] = {
+    broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.getAndIncrement(), levels)
   }
 
   def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean) {

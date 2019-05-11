@@ -42,27 +42,27 @@ class BlockManagerSlaveEndpoint(
 
   // Operations that involve removing blocks may be slow and should be done asynchronously
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case RemoveBlock(blockId) =>
-      doAsync[Boolean]("removing block " + blockId, context) {
+    case RemoveBlock(blockId, level) =>
+      doAsync[Boolean](s"removing block $blockId in $level's level", context) {
         blockManager.removeBlock(blockId)
         true
       }
 
-    case RemoveRdd(rddId) =>
-      doAsync[Int]("removing RDD " + rddId, context) {
+    case RemoveRdd(rddId, level) =>
+      doAsync[Int](s"removing RDD $rddId in $level's level", context) {
         blockManager.removeRdd(rddId)
       }
 
-    case RemoveShuffle(shuffleId) =>
-      doAsync[Boolean]("removing shuffle " + shuffleId, context) {
+    case RemoveShuffle(shuffleId, level) =>
+      doAsync[Boolean](s"removing shuffle $shuffleId in $level's level", context) {
         if (mapOutputTracker != null) {
           mapOutputTracker.unregisterShuffle(shuffleId)
         }
         SparkEnv.get.shuffleManager.unregisterShuffle(shuffleId)
       }
 
-    case RemoveBroadcast(broadcastId, _) =>
-      doAsync[Int]("removing broadcast " + broadcastId, context) {
+    case RemoveBroadcast(broadcastId, _, level) =>
+      doAsync[Int](s"removing broadcast $broadcastId in $level's level", context) {
         blockManager.removeBroadcast(broadcastId, tellMaster = true)
       }
 

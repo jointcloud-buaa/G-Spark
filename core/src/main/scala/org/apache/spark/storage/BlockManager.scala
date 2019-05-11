@@ -1375,6 +1375,7 @@ private[spark] class BlockManager(
   /**
    * Remove all blocks belonging to the given broadcast.
    */
+  // 返回移除的块的个数
   def removeBroadcast(broadcastId: Long, tellMaster: Boolean): Int = {
     logDebug(s"Removing broadcast $broadcastId")
     val blocksToRemove = blockInfoManager.entries.map(_._1).collect {
