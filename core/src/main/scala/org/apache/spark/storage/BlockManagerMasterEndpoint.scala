@@ -19,8 +19,8 @@ package org.apache.spark.storage
 
 import java.util.{HashMap => JHashMap}
 
-import scala.collection.mutable
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
 import org.apache.spark.SparkConf
@@ -89,9 +89,6 @@ class BlockManagerMasterEndpoint(
 
     case GetExecutorEndpointRef(executorId) =>
       context.reply(getExecutorEndpointRef(executorId))
-
-    case GetBlockManagerId(executorId) =>
-      context.reply(getBlockManagerId(executorId))
 
     case GetMemoryStatus =>
       context.reply(memoryStatus)
@@ -445,9 +442,6 @@ class BlockManagerMasterEndpoint(
       info.slaveEndpoint
     }
   }
-
-  private def getBlockManagerId(execId: String): Option[BlockManagerId] =
-    blockManagerIdByExecutor.get(execId)
 
   override def onStop(): Unit = {
     askThreadPool.shutdownNow()

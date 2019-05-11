@@ -90,7 +90,7 @@ class StageScheduler(
   private[siteDriver] val failedStages = new HashSet[Stage]
   private[siteDriver] val shuffleIdToMapStage = new HashMap[Int, ShuffleMapStage]
 
-  private[siteDriver] val shuffleIdToSerInstance = new HashMap[Int, SerializerInstance]()
+  private[siteDriver] val shuffleIdToShuffleInfo = new HashMap[Int, (SerializerInstance, Int)]()
 
   // Application dependencies (added through SparkContext) that we've fetched so far on this node.
   // Each map holds the master's timestamp for the version of that file or JAR we got.
@@ -194,17 +194,17 @@ class StageScheduler(
   }
 
   // TODO-lzp: 改递归为层次遍历
-  private def registerRemoteShuffle(rdd: RDD[_], parts: Array[Int],
+  private def getShuffleIdToPartIds(rdd: RDD[_], parts: Array[Int],
     buf: MMap[Int, Array[Int]]): Unit = {
     rdd.dependencies.foreach {
       case sdep: ShuffleDependency[_, _, _] =>
         buf(sdep.shuffleId) = parts
       case ndep: NarrowDependency[_] =>
-        registerRemoteShuffle(ndep.rdd, parts.flatMap(ndep.getParents), buf)
+        getShuffleIdToPartIds(ndep.rdd, parts.flatMap(ndep.getParents), buf)
     }
   }
 
-  def getShuffleSerInstance(shuffleId: Int): SerializerInstance = shuffleIdToSerInstance(shuffleId)
+  def getShuffleInfo(shuffleId: Int): (SerializerInstance, Int) = shuffleIdToShuffleInfo(shuffleId)
 
   def stageSubmitted(stageDesc: StageDescription): Unit = {
     val stageId = stageDesc.stageId
@@ -214,7 +214,7 @@ class StageScheduler(
 
     Thread.currentThread.setContextClassLoader(urlClassLoader)
 
-    val (stageFiles, stageJars, stageProps, blockMIds, parts, jobId, stageBytes) =
+    val (stageFiles, stageJars, stageProps, parts, jobId, stageBytes) =
       Stage.deserializeWithDependencies(stageDesc.serializedStage)
     stageIdToProperties(stageId) = stageProps
     stageIdToJobId(stageId) = jobId
@@ -235,23 +235,47 @@ class StageScheduler(
         // 让shuffleDep知道其ShuffleMapStage的处理的分区个数
         sms.shuffleDep.siteMapPartsLen = parts.length
         // 注册shuffleId到serilizerInstance的映射
-        shuffleIdToSerInstance(sms.shuffleDep.shuffleId) = sms.shuffleDep.serializer.newInstance()
+        shuffleIdToShuffleInfo(sms.shuffleDep.shuffleId) =
+          (sms.shuffleDep.serializer.newInstance(), sms.shuffleDep.partitioner.numPartitions)
       case _ =>
     }
 
-    // 这里有两个版本, 一个版本是尽量向同一个BlockManagerId发送尽可能多的请求块
-    // 一个则是多次向不同的BlockManagerId发送少量的请求块(当前版本)
     val buf = MMap.empty[Int, Array[Int]]  // shuffleId -> Array[PartId]
-    // 若Stage为无依赖的Stage，则最后buf还是空的
-    registerRemoteShuffle(stage.rdd, parts, buf)
-    if (buf.nonEmpty) {
-      // TODO-lzp: 还是应该在GD与SD间使用MapOutputTracker，一方面可以进行空块过滤，一方面可以使用有哪些bmId
-      buf.keys.foreach { shuffleId =>
-        blockMIds.foreach( bmId => mapOutputTracker.initRemoteShuffle(shuffleId, bmId))
+    getShuffleIdToPartIds(stage.rdd, parts, buf)
+
+    // 从MOTGM中获取所有块
+    val bmIdToBlockIds = buf.flatMap { case (shuffleId, partIds) =>
+      // 去除本集群的输出状态
+      val mapStatuses = mapOutputTracker.getCachedStatuses(shuffleId).toMap.values
+        .filter(_.location != env.blockManager.blockManagerId).toArray
+      mapStatuses.map { ms =>
+        // 如果是第一次，则注册
+        mapOutputTracker.registerRemoteShuffle(
+          shuffleId, ms.location, shuffleIdToShuffleInfo(shuffleId)._2
+        )
+        // 若不是第一次，则过滤掉所有已经拉取成功的块
+        val partResults = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)(ms.location)
+        val blocks = partIds.filterNot(p => partResults(p)._1)flatMap { p =>
+          val size = ms.getSizeForBlock(p)
+          if (size > 0) Some(RemoteShuffleBlockId(shuffleId, p))  // 空块过滤
+          else { // 对于大小<=0的块，不拉取，直接修改状态
+            mapOutputTracker.registerRemoteShuffleFetchResult(
+              shuffleId, p, ms.location, (true, 0))
+            if (size < 0) {
+              logError(s"RemoteShuffleBlockId($shuffleId, $p)'s size is $size in ${ms.location}")
+            } else {
+              logInfo(s"RemoteShuffleBlockId($shuffleId, $p)'s size is $size in ${ms.location}")
+            }
+            None
+          }
+        }
+        (ms.location, blocks)
       }
-      blockMIds.foreach { bmId =>
-        fetchRemoteShuffleStart(buf.toMap, bmId)
-      }
+    }.toArray.groupBy(_._1).mapValues(_.flatMap(_._2))
+
+    // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
+    bmIdToBlockIds.foreach { case (bmId, blocks) =>
+        fetchRemoteShuffleStart(blocks, bmId)
     }
 
     stageIdToStage(stage.id) = stage
@@ -261,23 +285,18 @@ class StageScheduler(
 
   // TODO-lzp: 增加重试机制
   def fetchRemoteShuffleStart(
-    shuffleIdToParts: Map[Int, Array[Int]], blockMId: BlockManagerId): Unit = {
-
-    val blockIds = shuffleIdToParts.flatMap { case (shuffleId, parts) =>
-      val partResults = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)(blockMId)
-      parts.filterNot(id => partResults(id)._1).map(p => RemoteShuffleBlockId(shuffleId, p))
-    }
+    blockIds: Array[RemoteShuffleBlockId], blockMId: BlockManagerId): Unit = {
 
     val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
 
     env.blockManager.shuffleClient.fetchBlocks(
-      blockMId.host, blockMId.port, blockMId.executorId, blockIds.toArray.map(_.toString),
+      blockMId.host, blockMId.port, blockMId.executorId, blockIds.map(_.toString),
       new BlockFetchingListener {
         override def onBlockFetchSuccess(blockId: String, data: ManagedBuffer): Unit = {
           val newBlockId = BlockId(blockId).asInstanceOf[RemoteShuffleBlockId]
           val hostBlockId = HostAwareShuffleBlockId(
             blockMId.hostPort, newBlockId.shuffleId, newBlockId.reduceId)
-          val serInstance = shuffleIdToSerInstance(newBlockId.shuffleId)
+          val serInstance = shuffleIdToShuffleInfo(newBlockId.shuffleId)._1
           val rst = SiteShuffleBlockFetcherUtils.writeAsBlockFile(
             hostBlockId, data, fileBufferSize,
             serializerInstance = serInstance
@@ -409,7 +428,7 @@ class StageScheduler(
    * the last fetch failure.
    */
   private[siteDriver] def resubmitFailedStages() {
-    if (failedStages.size > 0) {
+    if (failedStages.nonEmpty) {
       // Failed stages may be removed by job cancellation, so failed might be empty even if
       // the ResubmitFailedStages event has been scheduled.
       logInfo("Resubmitting failed stages")
@@ -418,6 +437,9 @@ class StageScheduler(
       failedStages.clear()
       for (stage <- failedStagesCopy.sortBy(_.firstJobId)) {
 //        submitStage(stage)
+        // TODO-lzp: 在之前的submitStage中，需要获取missing列表，先提交missing的，再提交此stage
+        //           如何在StageScheduler中保存这些依赖链，这里其实不想把StageScheduler当做纯粹的
+        //           的来一个Stage处理一个Stage，而是一个有一定Stage异常恢复机制的
         submitMissingTasks(stage, stage.firstJobId, stageIdToProperties(stage.id))
       }
     }
@@ -737,8 +759,8 @@ class StageScheduler(
                 shuffleStage.shuffleDep.shuffleId,
                 shuffleStage.calcPartIds,
                 shuffleStage.getPartResults.map(_.asInstanceOf[MapStatus]),
-                // TODO-lzp: 不是很确定是否要更改
                 changeEpoch = true)
+
               clearCacheLocs()
 
               if (!shuffleStage.isSiteAvailable) {
@@ -747,8 +769,8 @@ class StageScheduler(
                 logInfo("Resubmitting " + shuffleStage + " (" + shuffleStage.name +
                   ") because some of its tasks had failed: " +
                   shuffleStage.findMissingPartitions().mkString(", "))
-                // TODO-lzp: 这里需要更具体的情况, 为什么会存在要计算的分区都成功了, 但是stage块不成功
                 // 虽然我觉得, 这不是SiteDriver要处理的问题
+                // TODO-lzp: 还是应该加入submitStage, 如果要在StageScheduler上处理重试时
 //                submitStage(shuffleStage)
               } else {
                 // Mark any map-stage jobs waiting on this stage as finished
@@ -793,11 +815,6 @@ class StageScheduler(
                   case (mapId, rst) => (mapId, rst.asInstanceOf[MapStatus])
                 },
                 changeEpoch = true
-              )
-
-              mapOutputTracker.registerRemoteShuffle(
-                fakeStage.shuffleDep.shuffleId,
-                fakeStage.shuffleDep.partitioner.numPartitions
               )
 
               // 报告结果, 向mapOutput注册想了想还是在GD中进行吧

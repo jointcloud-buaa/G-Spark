@@ -1061,10 +1061,6 @@ class DAGScheduler(
     // TODO-lzp: 如何没有启动SiteDriver呢？？
     val allHosts = clusterToHost.values.toArray
 
-    val allBlockManagerIds = allHosts.flatMap{ h =>
-      blockManagerMaster.getBlockManagerId(hostnameToSDriverId(h))
-    }
-
     val hostToParts = MMap.empty[String, ArrayBuffer[Int]]
     if (allHosts.length == 1) {
       hostToParts(allHosts(0)) = ArrayBuffer(needHandlePartIds: _*)
@@ -1106,7 +1102,6 @@ class DAGScheduler(
       stageIdToIdxWithParts(stage.id)(idx) = parts.toArray
       val serializedStage = Stage.serializeWithDependencies(
         stage, jobId, parts.toArray, properties,
-        allBlockManagerIds.filter(bId => bId.host != host),
         sc.addedFiles, sc.addedJars, closureSerializer)
       new StageDescription(stage.id, hostnameToSDriverId(host), idx, serializedStage)
     }.toSeq

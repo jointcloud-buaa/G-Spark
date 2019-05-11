@@ -190,7 +190,6 @@ private[spark] object Stage {
     jobId: Int,
     parts: Array[Int],
     properties: Properties,
-    othBlockManagerIds: Array[BlockManagerId],
     currentFiles: mutable.Map[String, Long],
     currentJars: mutable.Map[String, Long],
     serializer: SerializerInstance)
@@ -228,9 +227,6 @@ private[spark] object Stage {
     dataOut.flush()
     val objOut = new ObjectOutputStream(out)
 
-    objOut.writeInt(othBlockManagerIds.length)
-    othBlockManagerIds.foreach(objOut.writeObject)
-
     objOut.flush()
 
     // Write the task itself and finish
@@ -244,7 +240,6 @@ private[spark] object Stage {
     HashMap[String, Long],  // files
     HashMap[String, Long],  // jars
     Properties,             // properties
-    Array[BlockManagerId],
     Array[Int],       // partitions
     Int,                    // jobId
     ByteBuffer) = {
@@ -281,15 +276,9 @@ private[spark] object Stage {
 
     val objIn = new ObjectInputStream(in)
 
-    val blockMIdLen = objIn.readInt()
-    val blockMIds = Array.ofDim[BlockManagerId](blockMIdLen)
-    (0 until blockMIdLen).foreach { idx =>
-      blockMIds(idx) = objIn.readObject().asInstanceOf[BlockManagerId]
-    }
-
     // Create a sub-buffer for the rest of the data, which is the serialized Task object
     val subBuffer = serializedStage.slice()  // ByteBufferInputStream will have read just up to task
-    (stageFiles, stageJars, stageProps, blockMIds, parts, jobId, subBuffer)
+    (stageFiles, stageJars, stageProps, parts, jobId, subBuffer)
   }
 
   def serializeStageResult(

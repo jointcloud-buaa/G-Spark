@@ -154,6 +154,7 @@ private[spark] trait MapOutputTrackerMasterRole extends MapOutputTracker {
   private var nextRequestId = new AtomicLong(0)
 
   // 保存远程Shuffle的块状态。当SiteDriver从另一个SiteDriver拉取到数据块后，会存储到本地磁盘，并更新此处
+  // shuffleId -> blockManagerId -> 以reduce分区为索引的数组, 元素值分别表示是否拉取成功，块大小
   protected val remoteShuffleFetchStatus =
     new ConcurrentHashMap[Int, MMap[BlockManagerId, Array[(Boolean, Long)]]].asScala
 
@@ -250,21 +251,17 @@ private[spark] trait MapOutputTrackerMasterRole extends MapOutputTracker {
 
   // TODO-lzp: 感觉下面两个方法有问题，在过滤空块的情况下，某个SiteDriver上可能没有块数据
 
-  // 注册remoteShuffle，在上一个Stage的FakeStage结束后执行。partsNum为FakeStage的分区数,
-  // 表示对于此shuffleId，无论哪个远程的BlockManagerId，其默认有partsNum个分区。
+  // 注册来自bmId的remoteShuffle，partsNum为与shuffleId相关的reduce分区个数
   // 初始化为(false, 0)表示此时未拉取，大小为0
-  def registerRemoteShuffle(shuffleId: Int, partsNum: Int): Unit = {
-    if (remoteShuffleFetchStatus.put(shuffleId, MMap.empty[BlockManagerId, Array[(Boolean, Long)]]
-        .withDefaultValue(Array.fill(partsNum)(false -> 0))).isDefined) {
-      throw new IllegalArgumentException("Remote Shuffle ID " + shuffleId + " registered twice")
+  def registerRemoteShuffle(shuffleId: Int, bmId: BlockManagerId, partsNum: Int): Unit = {
+    if (!remoteShuffleFetchStatus.contains(shuffleId)) {
+      remoteShuffleFetchStatus(shuffleId) = MMap.empty
     }
-  }
-
-  // 初始化远程Shuffle状态，在StageScheduler提交当前Stage时，开始远程拉取数据块前进行
-  def initRemoteShuffle(shuffleId: Int, bmId: BlockManagerId): Unit = {
     val m = remoteShuffleFetchStatus(shuffleId)
-    if (!m.contains(bmId)) {
-      m(bmId) = m(bmId)  // 后一个m(bmId)取的是默认值，配合上一个方法
+    m.synchronized {
+      if (!m.contains(bmId)) {
+        m(bmId) = Array.fill(partsNum)(false -> 0)
+      }
     }
   }
 
@@ -582,6 +579,29 @@ private[spark] trait MapOutputTrackerWorkerRole extends MapOutputTracker {
     }
   }
 
+  // 虽然觉得这个方法名跟它的功能基本不匹配，但是，还是不改的好
+  def getMapSizesByExecutorId(shuffleId: Int, reduceId: Int)
+  : Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
+    getMapSizesByExecutorId(shuffleId, reduceId, reduceId + 1)
+  }
+
+  def getMapSizesByExecutorId(shuffleId: Int, startPartition: Int, endPartition: Int)
+  : Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
+    logDebug(s"Fetching outputs for shuffle $shuffleId, partitions $startPartition-$endPartition")
+    // 这里其实一次性获取此shuffleId所有的输出，所以，只有第一次调用会慢点, 之后会非常快，因为有缓存
+    val statuses = getCachedStatuses(shuffleId)  // 获取跟此shuffleId相关的在集群本地的map输出位置信息
+    // Synchronize on the returned array because, on the driver, it gets mutated in place
+    statuses.synchronized {
+      return MapOutputTracker.convertMapStatuses(shuffleId, startPartition, endPartition, statuses)
+    }
+  }
+
+  def getRemoteShuffleStatuses(requestId: Long, shuffleId: Int, reduceId: Int)
+  : (Long, BlockManagerId, Seq[(BlockId, Long)], Int) = {
+    askMasterTracker[(Long, BlockManagerId, Seq[(BlockId, Long)], Int)](
+      GetRemoteShuffleStatuses(requestId, shuffleId, reduceId))
+  }
+
   override def unregisterShuffle(shuffleId: Int): Unit = cachedMapStatuses.remove(shuffleId)
 
   def updateCachedEpoch(newEpoch: Long) {
@@ -597,6 +617,7 @@ private[spark] trait MapOutputTrackerWorkerRole extends MapOutputTracker {
   override def stop(): Unit = {}
 }
 
+// 虽然有迷惑性，虽然统一了mapStatuses，但是MOTGM的键为subStageIdx，而MOTM的键为mapId
 private[spark] class MapOutputTrackerGlobalMaster(
   override protected val conf: SparkConf,
   override protected val broadcastManager: BroadcastManager,
@@ -628,28 +649,7 @@ private[spark] class MapOutputTrackerMaster(
   }
 }
 
-private[spark] class MapOutputTrackerWorker extends MapOutputTrackerWorkerRole {
-  def getMapSizesByExecutorId(shuffleId: Int, reduceId: Int)
-  : Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
-    getMapSizesByExecutorId(shuffleId, reduceId, reduceId + 1)
-  }
-
-  def getMapSizesByExecutorId(shuffleId: Int, startPartition: Int, endPartition: Int)
-  : Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
-    logDebug(s"Fetching outputs for shuffle $shuffleId, partitions $startPartition-$endPartition")
-    val statuses = getCachedStatuses(shuffleId)  // 获取跟此shuffleId相关的在集群本地的map输出位置信息
-    // Synchronize on the returned array because, on the driver, it gets mutated in place
-    statuses.synchronized {
-      return MapOutputTracker.convertMapStatuses(shuffleId, startPartition, endPartition, statuses)
-    }
-  }
-
-  def getRemoteShuffleStatuses(requestId: Long, shuffleId: Int, reduceId: Int)
-  : (Long, BlockManagerId, Seq[(BlockId, Long)], Int) = {
-    askMasterTracker[(Long, BlockManagerId, Seq[(BlockId, Long)], Int)](
-      GetRemoteShuffleStatuses(requestId, shuffleId, reduceId))
-  }
-}
+private[spark] class MapOutputTrackerWorker extends MapOutputTrackerWorkerRole
 
 private[spark] object MapOutputTracker extends Logging {
 
