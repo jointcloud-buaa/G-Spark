@@ -109,8 +109,8 @@ class BlockManagerMasterEndpoint(
     case RemoveShuffle(shuffleId, level) =>
         context.reply(removeShuffle(shuffleId, level))
 
-    case RemoveBroadcast(broadcastId, removeFromDriver, level) =>
-        context.reply(removeBroadcast(broadcastId, removeFromDriver, level))
+    case RemoveBroadcast(broadcastId, initLevel, downLevel, removeFromDriver, level) =>
+        context.reply(removeBroadcast(broadcastId, initLevel, downLevel, removeFromDriver, level))
 
     case RemoveBlock(blockId, level) =>
       removeBlockFromWorkers(blockId, level)
@@ -215,8 +215,9 @@ class BlockManagerMasterEndpoint(
   // 这里的removeFromDriver应该理解为是否移除level为0时的当前节点的广播变量, 除此外，当level>0时，应该移除
   // 所有广播变量. 则不从driver移除的条件是：不允许移除 且 level为0 且 不为当前节点
   private def removeBroadcast(
-    broadcastId: Long, removeFromDriver: Boolean, level: Int): Future[Seq[(Option[Int], Int)]] = {
-    val removeMsg = RemoveBroadcast(broadcastId, removeFromDriver, level + 1)
+    broadcastId: Long, initLevel: Int, downLevel: Int,
+    removeFromDriver: Boolean, level: Int): Future[Seq[(Option[Int], Int)]] = {
+    val removeMsg = RemoveBroadcast(broadcastId, initLevel, downLevel, removeFromDriver, level + 1)
     val requiredBlockManagers = blockManagerInfo.values.filter { info =>
       // 要么允许从driver中移除，要么level不为0，要么不为当前节点
       removeFromDriver || level != 0 || info.blockManagerId.executorId != execId

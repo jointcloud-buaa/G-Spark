@@ -27,7 +27,9 @@ import org.apache.spark.internal.Logging
 private[spark] class BroadcastManager(
     val isDriver: Boolean,
     conf: SparkConf,
-    securityManager: SecurityManager)
+    securityManager: SecurityManager,
+    compLevel: Int
+)
   extends Logging {
 
   private var initialized = false
@@ -52,11 +54,16 @@ private[spark] class BroadcastManager(
 
   private val nextBroadcastId = new AtomicLong(0)
 
-  def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean, levels: Int = 1): Broadcast[T] = {
-    broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.getAndIncrement(), levels)
+  // 突然想明白的问题，广播变量只能往下广播，不能往上广播，因此，用一个整数downLevel表示可往下广播几个层级
+  def newBroadcast[T: ClassTag](
+    value_ : T, isLocal: Boolean, downLevel: Int = 1): Broadcast[T] = {
+    broadcastFactory.newBroadcast[T](
+      value_, isLocal, nextBroadcastId.getAndIncrement(), compLevel, downLevel)
   }
 
-  def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean) {
-    broadcastFactory.unbroadcast(id, removeFromDriver, blocking)
+  def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean,
+    downLevel: Int = 1) {
+    broadcastFactory.unbroadcast(
+      id, initLevel = compLevel, downLevel = downLevel, removeFromDriver, blocking)
   }
 }

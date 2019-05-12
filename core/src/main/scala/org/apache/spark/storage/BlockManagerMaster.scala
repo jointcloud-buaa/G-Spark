@@ -128,9 +128,10 @@ private[spark] trait BMMMasterRole extends BlockManagerMaster {
     }
   }
 
-  def removeBroadcast(broadcastId: Long, removeFromMaster: Boolean, blocking: Boolean) {
+  def removeBroadcast(broadcastId: Long, initLevel: Int, downLevel: Int,
+    removeFromMaster: Boolean, blocking: Boolean) {
     val future = localRef.askWithRetry[Future[Seq[Int]]](
-      RemoveBroadcast(broadcastId, removeFromMaster, 0))
+      RemoveBroadcast(broadcastId, initLevel, downLevel, removeFromMaster, 0))
     future.onFailure {
       case e: Exception =>
         logWarning(s"Failed to remove broadcast $broadcastId" +

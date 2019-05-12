@@ -54,7 +54,10 @@ import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStrea
  * @param obj object to broadcast
  * @param id A unique identifier for the broadcast variable.
  */
-private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long, val levels: Int = 1)
+// 原则上，只要不会冲突，则广播变量就唯一. 即b1,b2，只要(initLevel, initLevel+downLevel)不重叠，无论id
+// 是否相同，这两个广播变量都是不同的
+private[spark] class TorrentBroadcast[T: ClassTag](
+  obj: T, id: Long, initLevel: Int, downLevel: Int)
   extends Broadcast[T](id) with Logging with Serializable {
 
   /**
@@ -82,7 +85,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long, val levels:
   }
   setConf(SparkEnv.get.conf)
 
-  private val broadcastId = BroadcastBlockId(id)
+  private val broadcastId = BroadcastBlockId(id, initLevel, downLevel)
 
   /** Total number of blocks this broadcast variable contains. */
   private val numBlocks: Int = writeBlocks(obj)
@@ -131,7 +134,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long, val levels:
       if (checksumEnabled) {
         checksums(i) = calcChecksum(block)
       }
-      val pieceId = BroadcastBlockId(id, "piece" + i)
+      val pieceId = BroadcastBlockId(id, initLevel, downLevel, "piece" + i)
       val bytes = new ChunkedByteBuffer(block.duplicate())
       if (!blockManager.putBytes(pieceId, bytes, MEMORY_AND_DISK_SER, tellMaster = true)) {
         throw new SparkException(s"Failed to store $pieceId of $broadcastId in local BlockManager")
@@ -148,7 +151,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long, val levels:
     val bm = SparkEnv.get.blockManager
 
     for (pid <- Random.shuffle(Seq.range(0, numBlocks))) {
-      val pieceId = BroadcastBlockId(id, "piece" + pid)
+      val pieceId = BroadcastBlockId(id, initLevel, downLevel, "piece" + pid)
       logDebug(s"Reading piece $pieceId of $broadcastId")
       // First try getLocalBytes because there is a chance that previous attempts to fetch the
       // broadcast blocks have already fetched some of the blocks. In that case, some blocks
@@ -186,7 +189,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long, val levels:
    * Remove all persisted state associated with this Torrent broadcast on the executors.
    */
   override protected def doUnpersist(blocking: Boolean) {
-    TorrentBroadcast.unpersist(id, removeFromDriver = false, blocking)
+    TorrentBroadcast.unpersist(id, initLevel, downLevel, removeFromDriver = false, blocking)
   }
 
   /**
@@ -194,7 +197,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long, val levels:
    * and driver.
    */
   override protected def doDestroy(blocking: Boolean) {
-    TorrentBroadcast.unpersist(id, removeFromDriver = true, blocking)
+    TorrentBroadcast.unpersist(id, initLevel, downLevel, removeFromDriver = true, blocking)
   }
 
   /** Used by the JVM when serializing this object. */
@@ -298,9 +301,10 @@ private object TorrentBroadcast extends Logging {
    * Remove all persisted blocks associated with this torrent broadcast on the executors.
    * If removeFromDriver is true, also remove these persisted blocks on the driver.
    */
-  def unpersist(id: Long, removeFromDriver: Boolean, blocking: Boolean): Unit = {
+  def unpersist(id: Long, initLevel: Int, downLevel: Int,
+    removeFromDriver: Boolean, blocking: Boolean): Unit = {
     logDebug(s"Unpersisting TorrentBroadcast $id")
     SparkEnv.get.blockManager.master.asInstanceOf[BMMMasterRole]
-      .removeBroadcast(id, removeFromDriver, blocking)
+      .removeBroadcast(id, initLevel, downLevel, removeFromDriver, blocking)
   }
 }

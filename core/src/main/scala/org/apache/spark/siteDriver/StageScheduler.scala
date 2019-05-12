@@ -248,6 +248,9 @@ class StageScheduler(
 
     // 从MOTGM中获取所有块
     val bmIdToBlockIds = buf.flatMap { case (shuffleId, partIds) =>
+
+      logInfo(s"""##lizp##: shuffleId($shuffleId) with partIds(${partIds.mkString(",")})""")
+
       // 去除本集群的输出状态
       val mapStatuses = mapOutputTracker.getCachedStatuses(shuffleId).toMap.values
         .filter(_.location != env.blockManager.blockManagerId).toArray
@@ -256,10 +259,17 @@ class StageScheduler(
         mapOutputTracker.registerRemoteShuffle(
           shuffleId, ms.location, shuffleIdToShuffleInfo(shuffleId)._2
         )
+
+        logInfo(s"##lizp##: ($shuffleId, ${ms.location}, ${shuffleIdToShuffleInfo(shuffleId)._2}")
+
         // 若不是第一次，则过滤掉所有已经拉取成功的块
         val partResults = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)(ms.location)
-        val blocks = partIds.filterNot(p => partResults(p)._1)flatMap { p =>
+
+        logInfo(s"""##lizp##: partResults is ${partResults.mkString(",")}""")
+
+        val blocks = partIds.filterNot(p => partResults(p)._1).flatMap { p =>
           val size = ms.getSizeForBlock(p)
+          logInfo(s"##lizp##: the part($p)'s size is $size")
           if (size > 0) Some(RemoteShuffleBlockId(shuffleId, p))  // 空块过滤
           else { // 对于大小<=0的块，不拉取，直接修改状态
             mapOutputTracker.registerRemoteShuffleFetchResult(
@@ -272,6 +282,8 @@ class StageScheduler(
             None
           }
         }
+
+        logInfo(s"""##lizp##: need to fetch blocks: ${blocks.mkString(",")} from ${ms.location}""")
         (ms.location, blocks)
       }
     }.toArray.groupBy(_._1).mapValues(_.flatMap(_._2))
@@ -279,7 +291,9 @@ class StageScheduler(
     // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
     bmIdToBlockIds.foreach { case (bmId, blocks) =>
       logInfo(s"""##lizp##: fetch blocks from $bmId with ${blocks.mkString(",")}""")
+      if (blocks.nonEmpty) {
         fetchRemoteShuffleStart(blocks, bmId)
+      }
     }
 
     stageIdToStage(stage.id) = stage

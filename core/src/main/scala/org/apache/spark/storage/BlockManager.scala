@@ -73,8 +73,9 @@ private[spark] class BlockManager(
     shuffleManager: ShuffleManager,
     val blockTransferService: BlockTransferService,
     securityManager: SecurityManager,
-    numUsableCores: Int)
-  extends BlockDataManager with BlockEvictionHandler with Logging {
+    numUsableCores: Int,
+  compLevel: Int
+) extends BlockDataManager with BlockEvictionHandler with Logging {
 
   private[spark] val externalShuffleServiceEnabled =
     conf.getBoolean("spark.shuffle.service.enabled", false)
@@ -428,8 +429,20 @@ private[spark] class BlockManager(
         //                   在别的块管理器拉取到一个块数据后, 也需要向上一级更新块信息, 这样别的块管理
         //                   器才能从它上拉取
       case m: BMMMiddleRole =>
-        m.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
-        m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+        if (blockId.isBroadcast) {  // 广播变量单独处理
+          val realBlock = blockId.asInstanceOf[BroadcastBlockId]
+          if (compLevel == realBlock.initLevel) {  // 广播变量是在当前层级创建的，则只更新本地块信息
+            m.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+          } else if (compLevel == realBlock.initLevel + realBlock.downLevel) { // 达到可广播的下界
+            m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+          } else {  // 在中间层级
+            m.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+            m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+          }
+        } else {
+          m.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+          m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+        }
       case gm: BMMMasterRole =>
         gm.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
       case w: BMMWorkerRole =>
@@ -1414,10 +1427,11 @@ private[spark] class BlockManager(
    * Remove all blocks belonging to the given broadcast.
    */
   // 返回移除的块的个数
-  def removeBroadcast(broadcastId: Long, tellMaster: Boolean): Int = {
+  def removeBroadcast(
+    broadcastId: Long, initLevel: Int, downLevel: Int, tellMaster: Boolean): Int = {
     logDebug(s"Removing broadcast $broadcastId")
     val blocksToRemove = blockInfoManager.entries.map(_._1).collect {
-      case bid @ BroadcastBlockId(`broadcastId`, _) => bid
+      case bid @ BroadcastBlockId(`broadcastId`, `initLevel`, `downLevel`, _) => bid
     }
     blocksToRemove.foreach { blockId => removeBlock(blockId, tellMaster) }
     blocksToRemove.size

@@ -202,7 +202,7 @@ object SparkEnv extends Logging {
     val closureSerializer = new JavaSerializer(conf)
 
     // TODO-IMP: 此处的1st参数, 至少在当前实现中, 没有用
-    val broadcastManager = new BroadcastManager(true, conf, securityManager)
+    val broadcastManager = new BroadcastManager(true, conf, securityManager, 0)
 
     val mapOutputTracker = new MapOutputTrackerGlobalMaster(conf, broadcastManager, isLocal)
     logInfo("Registering " + MapOutputTracker.ENDPOINT_NAME)
@@ -238,7 +238,7 @@ object SparkEnv extends Logging {
     val blockManagerGlobalMaster = new BMMGlobalMaster(execId, localRef, conf)
     val blockManager = new BlockManager(execId, rpcEnv,
       blockManagerGlobalMaster, serializerManager, conf, memoryManager, mapOutputTracker,
-      shuffleManager, blockTransferService, securityManager, numCores)
+      shuffleManager, blockTransferService, securityManager, numCores, 0)
 
     // ==
     val metricsSystem = MetricsSystem.createMetricsSystem("global-driver", conf, securityManager)
@@ -299,7 +299,7 @@ object SparkEnv extends Logging {
     val closureSerializer = new JavaSerializer(conf)
 
     // 此处的1st参数, 至少在当前实现中, 没有用
-    val broadcastManager = new BroadcastManager(true, conf, securityManager)
+    val broadcastManager = new BroadcastManager(true, conf, securityManager, 1)
 
     val mapOutputTracker = new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
     // 设定自己的MOTMaster的trackerEndpoint
@@ -348,7 +348,7 @@ object SparkEnv extends Logging {
     val blockManagerMaster = new BMMMaster(execId, localRef, driverEndpoint, conf)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
-      blockTransferService, securityManager, numCores)
+      blockTransferService, securityManager, numCores, 1)
 
     conf.set("spark.executor.id", execId)
     val metricsSystem = MetricsSystem.createMetricsSystem("siteDriver", conf, securityManager)
@@ -421,7 +421,7 @@ object SparkEnv extends Logging {
     val closureSerializer = new JavaSerializer(conf)
 
     // 此处的1st参数, 至少在当前实现中, 没有用
-    val broadcastManager = new BroadcastManager(false, conf, securityManager)
+    val broadcastManager = new BroadcastManager(false, conf, securityManager, 2)
 
     val mapOutputTracker = new MapOutputTrackerWorker
     mapOutputTracker.masterTrackerEndpoint = RpcUtils.makeRef(
@@ -457,7 +457,7 @@ object SparkEnv extends Logging {
     val blockManagerMaster = new BMMWorker(execId, driverEndpoint)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
-      blockTransferService, securityManager, numCores)
+      blockTransferService, securityManager, numCores, 2)
 
     conf.set("spark.executor.id", execId)
     val metricsSystem = MetricsSystem.createMetricsSystem("executor", conf, securityManager)

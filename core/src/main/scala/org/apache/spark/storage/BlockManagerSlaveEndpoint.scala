@@ -61,9 +61,9 @@ class BlockManagerSlaveEndpoint(
         SparkEnv.get.shuffleManager.unregisterShuffle(shuffleId)
       }
 
-    case RemoveBroadcast(broadcastId, _, level) =>
+    case RemoveBroadcast(broadcastId, initLevel, downLevel, _, level) =>
       doAsync[Int](s"removing broadcast $broadcastId in $level's level", context) {
-        blockManager.removeBroadcast(broadcastId, tellMaster = true)
+        blockManager.removeBroadcast(broadcastId, initLevel, downLevel, tellMaster = true)
       }
 
     case GetBlockStatus(blockId, _) =>
