@@ -74,6 +74,8 @@ private[spark] abstract class Stage(
 
   val numPartitions: Int = rdd.partitions.length
 
+  var epoch: Long = -1
+
   // 注意: 对于ShuffleMapStage而言, GD/SD的numFinished有不同的含义
   @transient var numFinished: Int = 0
 

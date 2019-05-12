@@ -291,7 +291,7 @@ class DAGScheduler(
 //    }
 //    listenerBus.post(SparkListenerSiteDriverMetricsUpdate(sdriverId, accumUpdates))
 //    // TODO-lzp: 是否要区分executor/siteDriver发送的块管理器心跳
-    blockManagerMaster.driverEndpoint.askWithRetry[Boolean](
+    blockManagerMaster.asInstanceOf[BMMMasterRole].localRef.askWithRetry[Boolean](
       BlockManagerHeartbeat(blockManagerId), new RpcTimeout(600 seconds, "BlockManagerHeartbeat"))
   }
 
@@ -331,7 +331,7 @@ class DAGScheduler(
         val blockIds = rdd.partitions.indices.map(
           index => RDDBlockId(rdd.id, index)
         ).toArray[BlockId]
-        blockManagerMaster.getLocations(blockIds).map { bms =>
+        blockManagerMaster.asInstanceOf[BMMGlobalMaster].getLocalLocations(blockIds).map { bms =>
           bms.map(bm => TaskLocation(bm.host, bm.executorId))
         }
       }
@@ -1028,6 +1028,8 @@ class DAGScheduler(
         runningStages -= stage
         return
     }
+
+    stage.epoch = mapOutputTracker.getEpoch
 
     // TODO-lzp: 真实的带宽测量
     val bwDist = getBandwitchDist()

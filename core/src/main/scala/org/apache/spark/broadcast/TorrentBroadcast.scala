@@ -29,7 +29,7 @@ import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.storage.{BlockId, BroadcastBlockId, StorageLevel}
+import org.apache.spark.storage.{BlockId, BMMMasterRole, BroadcastBlockId, StorageLevel}
 import org.apache.spark.util.{ByteBufferInputStream, Utils}
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
@@ -300,6 +300,7 @@ private object TorrentBroadcast extends Logging {
    */
   def unpersist(id: Long, removeFromDriver: Boolean, blocking: Boolean): Unit = {
     logDebug(s"Unpersisting TorrentBroadcast $id")
-    SparkEnv.get.blockManager.master.removeBroadcast(id, removeFromDriver, blocking)
+    SparkEnv.get.blockManager.master.asInstanceOf[BMMMasterRole]
+      .removeBroadcast(id, removeFromDriver, blocking)
   }
 }

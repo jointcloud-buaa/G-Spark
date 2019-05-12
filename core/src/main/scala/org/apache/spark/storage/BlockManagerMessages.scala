@@ -57,7 +57,8 @@ private[spark] object BlockManagerMessages {
   case class RegisterBlockManager(
       blockManagerId: BlockManagerId,
       maxMemSize: Long,
-      sender: RpcEndpointRef)
+      master: Option[RpcEndpointRef],  // 角色本身启动的MasterEndpoint
+      slave: RpcEndpointRef)  // 角色本身启动的SlaveEndpoint
     extends ToBlockManagerMaster
 
   case class UpdateBlockInfo(

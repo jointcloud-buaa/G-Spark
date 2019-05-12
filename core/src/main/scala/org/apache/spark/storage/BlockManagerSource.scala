@@ -28,7 +28,7 @@ private[spark] class BlockManagerSource(val blockManager: BlockManager)
 
   metricRegistry.register(MetricRegistry.name("memory", "maxMem_MB"), new Gauge[Long] {
     override def getValue: Long = {
-      val storageStatusList = blockManager.master.getStorageStatus
+      val storageStatusList = blockManager.master.asInstanceOf[BMMMasterRole].getStorageStatus
       val maxMem = storageStatusList.map(_.maxMem).sum
       maxMem / 1024 / 1024
     }
@@ -36,7 +36,7 @@ private[spark] class BlockManagerSource(val blockManager: BlockManager)
 
   metricRegistry.register(MetricRegistry.name("memory", "remainingMem_MB"), new Gauge[Long] {
     override def getValue: Long = {
-      val storageStatusList = blockManager.master.getStorageStatus
+      val storageStatusList = blockManager.master.asInstanceOf[BMMMasterRole].getStorageStatus
       val remainingMem = storageStatusList.map(_.memRemaining).sum
       remainingMem / 1024 / 1024
     }
@@ -44,7 +44,7 @@ private[spark] class BlockManagerSource(val blockManager: BlockManager)
 
   metricRegistry.register(MetricRegistry.name("memory", "memUsed_MB"), new Gauge[Long] {
     override def getValue: Long = {
-      val storageStatusList = blockManager.master.getStorageStatus
+      val storageStatusList = blockManager.master.asInstanceOf[BMMMasterRole].getStorageStatus
       val memUsed = storageStatusList.map(_.memUsed).sum
       memUsed / 1024 / 1024
     }
@@ -52,7 +52,7 @@ private[spark] class BlockManagerSource(val blockManager: BlockManager)
 
   metricRegistry.register(MetricRegistry.name("disk", "diskSpaceUsed_MB"), new Gauge[Long] {
     override def getValue: Long = {
-      val storageStatusList = blockManager.master.getStorageStatus
+      val storageStatusList = blockManager.master.asInstanceOf[BMMMasterRole].getStorageStatus
       val diskSpaceUsed = storageStatusList.map(_.diskUsed).sum
       diskSpaceUsed / 1024 / 1024
     }

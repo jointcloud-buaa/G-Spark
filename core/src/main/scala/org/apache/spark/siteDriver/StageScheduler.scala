@@ -225,6 +225,9 @@ class StageScheduler(
     val stage = closureSerializer.deserialize[Stage](
       stageBytes, Thread.currentThread.getContextClassLoader)  // 必须指定classLoader
 
+    // 更新本地的MOT的epoch, 可能会清除本地缓存的mapStatuses
+    env.mapOutputTracker.asInstanceOf[MapOutputTrackerWorkerRole].updateCachedEpoch(stage.epoch)
+
     stage.init(parts)
 
     registerRDD(stage.rdd, parts)
@@ -275,6 +278,7 @@ class StageScheduler(
 
     // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
     bmIdToBlockIds.foreach { case (bmId, blocks) =>
+      logInfo(s"""##lizp##: fetch blocks from $bmId with ${blocks.mkString(",")}""")
         fetchRemoteShuffleStart(blocks, bmId)
     }
 
@@ -346,7 +350,7 @@ class StageScheduler(
     accumUpdates: Array[(Long, Int, Int, Seq[AccumulableInfo])],
     blockManagerId: BlockManagerId): Boolean = {
     listenerBus.post(SparkListenerExecutorMetricsUpdate(execId, accumUpdates))
-    blockManagerMaster.driverEndpoint.askWithRetry[Boolean](
+    blockManagerMaster.asInstanceOf[BMMMaster].localRef.askWithRetry[Boolean](
       BlockManagerSiteHeartbeat(blockManagerId),
       new RpcTimeout(600 seconds, "BlockManagerHeartbeat")
     )
@@ -650,7 +654,7 @@ class StageScheduler(
         IndexedSeq.fill(parts.length)(Nil)  // 用Nil填充
       } else {
         val blockIds = parts.map(partId => RDDBlockId(rdd.id, partId)).toArray[BlockId]
-        blockManagerMaster.getLocations(blockIds).map { bms =>
+        blockManagerMaster.asInstanceOf[BMMMaster].getLocalLocations(blockIds).map { bms =>
           bms.map(bm => TaskLocation(bm.host, bm.executorId))
         }
       }
@@ -944,7 +948,7 @@ class StageScheduler(
     if (!failedEpoch.contains(execId) || failedEpoch(execId) < currentEpoch) {
       failedEpoch(execId) = currentEpoch
       logInfo("Executor lost: %s (epoch %d)".format(execId, currentEpoch))
-      blockManagerMaster.removeExecutor(execId)
+      blockManagerMaster.asInstanceOf[BMMMaster].removeExecutor(execId)
 
       if (filesLost || !env.blockManager.externalShuffleServiceEnabled) {
         logInfo("Shuffle files lost for executor: %s (epoch %d)".format(execId, currentEpoch))

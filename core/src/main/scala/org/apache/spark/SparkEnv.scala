@@ -230,14 +230,12 @@ object SparkEnv extends Logging {
     val blockTransferService =
       new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
         blockManagerPort, numCores)
-    logInfo(s"Registering ${BlockManagerMaster.GLOBAL_DRIVER_ENDPOINT_NAME}")
-    val blockManagerGlobalMasterEndpointRef = rpcEnv.setupEndpoint(
-      BlockManagerMaster.GLOBAL_DRIVER_ENDPOINT_NAME,
+    logInfo(s"Registering ${BlockManagerMaster.DRIVER_ENDPOINT_NAME}")
+    val localRef = rpcEnv.setupEndpoint(
+      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, Some(listenerBus))
     )
-    val blockManagerGlobalMaster = new BlockManagerMaster(
-      execId, blockManagerGlobalMasterEndpointRef, conf
-    )
+    val blockManagerGlobalMaster = new BMMGlobalMaster(execId, localRef, conf)
     val blockManager = new BlockManager(execId, rpcEnv,
       blockManagerGlobalMaster, serializerManager, conf, memoryManager, mapOutputTracker,
       shuffleManager, blockTransferService, securityManager, numCores)
@@ -337,18 +335,17 @@ object SparkEnv extends Logging {
     val blockManagerPort = conf.get(SITE_DRIVER_BLOCK_MANAGER_PORT)
     val blockTransferService = new NettyBlockTransferService(
       conf, securityManager, hostname, hostname, blockManagerPort, numCores)
-    val blockManagerGlobalMasterRef = RpcUtils.makeRef(
-      BlockManagerMaster.GLOBAL_DRIVER_ENDPOINT_NAME,
+    val driverEndpoint = RpcUtils.makeRef(
+      BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       conf.get("spark.globalDriver.host", "localhost"),
       conf.getInt("spark.globalDriver.port", 7077),
       rpcEnv
     )
-    val blockManagerMasterRef = rpcEnv.setupEndpoint(
+    val localRef = rpcEnv.setupEndpoint(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       new BlockManagerMasterEndpoint(execId, rpcEnv, isLocal, conf, Some(listenerBus))
     )
-    val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
-    blockManagerMaster.setGlobalDriverEndpoint(blockManagerGlobalMasterRef)
+    val blockManagerMaster = new BMMMaster(execId, localRef, driverEndpoint, conf)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numCores)
@@ -451,13 +448,13 @@ object SparkEnv extends Logging {
     val blockManagerPort = conf.get(BLOCK_MANAGER_PORT)
     val blockTransferService = new NettyBlockTransferService(
       conf, securityManager, hostname, hostname, blockManagerPort, numCores)
-    val blockManagerMasterRef = RpcUtils.makeRef(
+    val driverEndpoint = RpcUtils.makeRef(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       conf.get("spark.siteDriver.host", "localhost"),
       conf.getInt("spark.siteDriver.port", 7077),
       rpcEnv
     )
-    val blockManagerMaster = new BlockManagerMaster(execId, blockManagerMasterRef, conf)
+    val blockManagerMaster = new BMMWorker(execId, driverEndpoint)
     val blockManager = new BlockManager(execId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numCores)

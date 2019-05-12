@@ -26,6 +26,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.{RDD, ReliableRDDCheckpointData}
+import org.apache.spark.storage.BMMMasterRole
 import org.apache.spark.util.{AccumulatorContext, AccumulatorV2, ThreadUtils, Utils}
 
 /**
@@ -223,7 +224,7 @@ private[spark] class ContextCleaner(sc: ComponentContext) extends Logging {
     try {
       logDebug("Cleaning shuffle " + shuffleId)
       mapOutputTracker.unregisterShuffle(shuffleId)
-      blockManagerMaster.removeShuffle(shuffleId, blocking)
+      blockManagerMaster.asInstanceOf[BMMMasterRole].removeShuffle(shuffleId, blocking)
       listeners.asScala.foreach(_.shuffleCleaned(shuffleId))
       logInfo("Cleaned shuffle " + shuffleId)
     } catch {

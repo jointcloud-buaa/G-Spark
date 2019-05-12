@@ -32,6 +32,7 @@ import org.apache.spark.rpc._
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.siteDriver.CoarseGrainedSchedulerBackend.ENDPOINT_NAME
+import org.apache.spark.storage.BMMMiddleRole
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
 
 class CoarseGrainedSchedulerBackend(
@@ -353,7 +354,8 @@ class CoarseGrainedSchedulerBackend(
           // manager to reregister itself. If that happens, the block manager master will know
           // about the executor, but the scheduler will not. Therefore, we should remove the
           // executor from the block manager when we hit this case.
-          scheduler.sparkEnv.blockManager.master.removeExecutorAsync(executorId)
+          scheduler.sparkEnv.blockManager
+            .master.asInstanceOf[BMMMiddleRole].removeExecutorAsync(executorId)
           logInfo(s"Asked to remove non-existent executor $executorId")
       }
     }

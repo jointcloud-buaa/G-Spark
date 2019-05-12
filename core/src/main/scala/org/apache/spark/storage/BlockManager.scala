@@ -180,10 +180,7 @@ private[spark] class BlockManager(
     val id =
       BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
 
-    val idFromMaster = master.registerBlockManager(
-      id,
-      maxMemory,
-      slaveEndpoint)
+    val idFromMaster = register(id)
 
     blockManagerId = if (idFromMaster != null) idFromMaster else id
 
@@ -260,8 +257,21 @@ private[spark] class BlockManager(
   def reregister(): Unit = {
     // TODO: We might need to rate limit re-registering.
     logInfo(s"BlockManager $blockManagerId re-registering with master")
-    master.registerBlockManager(blockManagerId, maxMemory, slaveEndpoint)
+    register()
     reportAllBlocks()
+  }
+
+  // 注册, 根据不同角色作不同的注册
+  def register(id: BlockManagerId = blockManagerId): BlockManagerId = {
+    master match {
+      case m: BMMMiddleRole =>
+        m.registerLocalBlockManager(id, maxMemory, slaveEndpoint)
+        m.registerBlockManager(id, maxMemory, slaveEndpoint)
+      case gm: BMMMasterRole =>
+        gm.registerLocalBlockManager(id, maxMemory, slaveEndpoint)
+      case w: BMMWorkerRole =>
+        w.registerBlockManager(id, maxMemory, slaveEndpoint)
+    }
   }
 
   /**
@@ -394,6 +404,7 @@ private[spark] class BlockManager(
    * which will be true if the block was successfully recorded and false if
    * the slave needs to re-register.
    */
+  // TODO-lzp: 要区分一下, 向上还是向自己汇报
   private def tryToReportBlockStatus(
       blockId: BlockId,
       status: BlockStatus,
@@ -401,7 +412,29 @@ private[spark] class BlockManager(
     val storageLevel = status.storageLevel
     val inMemSize = Math.max(status.memSize, droppedMemorySize)
     val onDiskSize = status.diskSize
-    master.updateBlockInfo(blockManagerId, blockId, storageLevel, inMemSize, onDiskSize)
+    updateBlockInfo(master, blockManagerId, blockId, storageLevel, inMemSize, onDiskSize)
+  }
+
+  private def updateBlockInfo(
+    master: BlockManagerMaster,
+    id: BlockManagerId, blockId: BlockId, level: StorageLevel, inMemSize: Long, onDiskSize: Long
+  ): Boolean = {
+    master match {
+        // TODO-lzp: 严格意义上,这里有点粗糙. 还是要针对具体的块类型来说
+        // 块管理器其实只管理三种BlockId:
+        // RDDId, 其在Executor执行RDD#iterator时存入, 更新块信息是向SD更新
+        // TaskResultBlockId, 其在Task#run时存入, 更新块信息是向SD更新
+        // BroadcastBlockId, 相比比较麻烦, 因为SD/GD都能创建广播变量, 创建后, 其需要向自己更新块信息
+        //                   在别的块管理器拉取到一个块数据后, 也需要向上一级更新块信息, 这样别的块管理
+        //                   器才能从它上拉取
+      case m: BMMMiddleRole =>
+        m.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+        m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+      case gm: BMMMasterRole =>
+        gm.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+      case w: BMMWorkerRole =>
+        w.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+    }
   }
 
   /**
@@ -432,14 +465,15 @@ private[spark] class BlockManager(
     }
   }
 
+
   /**
    * Get locations of an array of blocks.
    */
   private def getLocationBlockIds(blockIds: Array[BlockId]): Array[Seq[BlockManagerId]] = {
     val startTimeMs = System.currentTimeMillis
-    val locations = master.getLocations(blockIds).toArray
+    val locations = BlockManager.getMultiBlocksLocationsInternal(master, blockIds)
     logDebug("Got multiple block location in %s".format(Utils.getUsedTimeMs(startTimeMs)))
-    locations
+    locations.toArray
   }
 
   /**
@@ -581,7 +615,8 @@ private[spark] class BlockManager(
    * multiple block managers can share the same host.
    */
   private def getLocations(blockId: BlockId): Seq[BlockManagerId] = {
-    val locs = Random.shuffle(master.getLocations(blockId))
+    val locations = BlockManager.getOneBlockLocationsInternal(master, blockId)
+    val locs = Random.shuffle(locations)
     val (preferredLocs, otherLocs) = locs.partition { loc => blockManagerId.host == loc.host }
     preferredLocs ++ otherLocs
   }
@@ -591,16 +626,19 @@ private[spark] class BlockManager(
    */
   def getRemoteBytes(blockId: BlockId): Option[ChunkedByteBuffer] = {
     logDebug(s"Getting remote block $blockId")
+    logInfo(s"##lizp##: Getting remote block $blockId")
     require(blockId != null, "BlockId is null")
     var runningFailureCount = 0
     var totalFailureCount = 0
     val locations = getLocations(blockId)
+    logInfo(s"""##lizp##: the block $blockId's locations is ${locations.mkString(",")}""")
     val maxFetchFailures = locations.size
     var locationIterator = locations.iterator
     while (locationIterator.hasNext) {
       val loc = locationIterator.next()
       logDebug(s"Getting remote block $blockId from $loc")
       val data = try {
+        logInfo(s"##lizp##: fetch block sync $loc with $blockId")
         blockTransferService.fetchBlockSync(
           loc.host, loc.port, loc.executorId, blockId.toString).nioByteBuffer()
       } catch {
@@ -1191,7 +1229,7 @@ private[spark] class BlockManager(
       val cachedPeersTtl = conf.getInt("spark.storage.cachedPeersTtl", 60 * 1000) // milliseconds
       val timeout = System.currentTimeMillis - lastPeerFetchTime > cachedPeersTtl
       if (cachedPeers == null || forceFetch || timeout) {
-        cachedPeers = master.getPeers(blockManagerId).sortBy(_.hashCode)
+        cachedPeers = master.asInstanceOf[BMMMasterRole].getPeers(blockManagerId).sortBy(_.hashCode)
         lastPeerFetchTime = System.currentTimeMillis
         logDebug("Fetched peers from master: " + cachedPeers.mkString("[", ",", "]"))
       }
@@ -1439,7 +1477,7 @@ private[spark] class BlockManager(
 }
 
 
-private[spark] object BlockManager {
+private[spark] object BlockManager extends Logging {
   private val ID_GENERATOR = new IdGenerator
 
   def blockIdsToHosts(
@@ -1452,7 +1490,7 @@ private[spark] object BlockManager {
     val blockLocations: Seq[Seq[BlockManagerId]] = if (blockManagerMaster == null) {
       env.blockManager.getLocationBlockIds(blockIds)
     } else {
-      blockManagerMaster.getLocations(blockIds)
+      getMultiBlocksLocationsInternal(blockManagerMaster, blockIds)
     }
 
     val blockManagers = new HashMap[BlockId, Seq[String]]
@@ -1460,5 +1498,54 @@ private[spark] object BlockManager {
       blockManagers(blockIds(i)) = blockLocations(i).map(_.host)
     }
     blockManagers.toMap
+  }
+
+  def getOneBlockLocationsInternal(
+    bmm: BlockManagerMaster, blockId: BlockId): Seq[BlockManagerId] = {
+    bmm match {
+      case m: BMMMiddleRole =>
+        logInfo(s"""##lizp##: get locations for $blockId in middle role""")
+        val seq1 = m.getLocations(blockId)
+        logInfo(s"""|from remote locations: ${seq1.mkString(",")}""")
+        val seq2 = m.getLocalLocations(blockId)
+        logInfo(s"""|from local locations: ${seq2.mkString(",")}""")
+        (seq1 ++ seq2).distinct
+      case gm: BMMMasterRole =>
+        logInfo(s"""##lizp##: get locations for $blockId in master role""")
+        val seq = gm.getLocalLocations(blockId)
+        logInfo(s"""|from local locations: ${seq.mkString(",")}""")
+        seq
+      case w: BMMWorkerRole =>
+        logInfo(s"""##lizp##: get locations for $blockId in worker role""")
+        val seq = w.getLocations(blockId)
+        logInfo(s"""|from remote locations: ${seq.mkString(",")}""")
+        seq
+    }
+  }
+
+  def getMultiBlocksLocationsInternal(
+    bmm: BlockManagerMaster, blockIds: Array[BlockId]): IndexedSeq[Seq[BlockManagerId]] = {
+    bmm match {
+      case m: BMMMiddleRole =>
+        logInfo(s"""##lizp##: get locations in middle role
+                   |blockIds: ${blockIds.mkString(",")}""")
+        val seq1 = m.getLocalLocations(blockIds)
+        logInfo(s"""|from local locations: ${seq1.mkString(",")}""")
+        val seq2 = m.getLocations(blockIds)
+        logInfo(s"""|from remote locations: ${seq1.mkString(",")}""")
+        seq1.zip(seq2).map{ case (s1, s2) => (s1 ++ s2).distinct}
+      case gm: BMMMasterRole =>
+        logInfo(s"""##lizp##: get locations in master role
+                   |blockIds: ${blockIds.mkString(",")}""")
+        val seq = gm.getLocalLocations(blockIds)
+        logInfo(s"""|from local locations: ${seq.mkString(",")}""")
+        seq
+      case w: BMMWorkerRole =>
+        logInfo(s"""##lizp##: get locations in worker role
+                   |blockIds: ${blockIds.mkString(",")}""")
+        val seq = w.getLocations(blockIds)
+        logInfo(s"""|from local locations: ${seq.mkString(",")}""")
+        seq
+    }
   }
 }

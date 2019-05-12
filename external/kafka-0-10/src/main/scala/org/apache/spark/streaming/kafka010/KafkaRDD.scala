@@ -17,11 +17,11 @@
 
 package org.apache.spark.streaming.kafka010
 
-import java.{ util => ju }
+import java.{util => ju}
 
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.kafka.clients.consumer.{ ConsumerConfig, ConsumerRecord }
+import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord}
 import org.apache.kafka.common.TopicPartition
 
 import org.apache.spark.{Partition, SparkContext, SparkException, TaskContext}
@@ -29,7 +29,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.partial.{BoundedDouble, PartialResult}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.ExecutorCacheTaskLocation
-import org.apache.spark.storage.StorageLevel
+import org.apache.spark.storage.{BMMMasterRole, StorageLevel}
 
 /**
  * A batch-oriented interface for consuming from Kafka.
@@ -131,7 +131,7 @@ private[spark] class KafkaRDD[K, V](
 
   private def executors(): Array[ExecutorCacheTaskLocation] = {
     val bm = sparkContext.env.blockManager
-    bm.master.getPeers(bm.blockManagerId).toArray
+    bm.master.asInstanceOf[BMMMasterRole].getPeers(bm.blockManagerId).toArray
       .map(x => ExecutorCacheTaskLocation(x.host, x.executorId))
       .sortWith(compareExecutors)
   }

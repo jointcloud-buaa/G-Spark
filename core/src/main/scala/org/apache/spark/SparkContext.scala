@@ -606,8 +606,11 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
       if (executorId == SparkContext.GLOBAL_DRIVER_IDENTIFIER) {
         Some(Utils.getThreadDump())
       } else {
-        val endpointRef = env.blockManager.master.getExecutorEndpointRef(executorId).get
-        Some(endpointRef.askWithRetry[Array[ThreadStackTrace]](TriggerThreadDump))
+        val endpointRef = env.blockManager
+          .master.asInstanceOf[BMMMasterRole].getExecutorEndpointRef(executorId).get
+        // TODO-lzp: 这里有问题，因为它期望的是获取Executor的线程dump，而非SD的线程dump, 在MasterEndpoint
+        //           设置转发操作. 另一问题是，具体executorId其实在每个集群上都有
+        Some(endpointRef._2.askWithRetry[Array[ThreadStackTrace]](TriggerThreadDump))
       }
     } catch {
       case e: Exception =>
@@ -1570,7 +1573,8 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
    */
   def getExecutorMemoryStatus: Map[String, (Long, Long)] = {
     assertNotStopped()
-    env.blockManager.master.getMemoryStatus.map { case(blockManagerId, mem) =>
+    env.blockManager.master.asInstanceOf[BMMMasterRole]
+      .getMemoryStatus.map { case(blockManagerId, mem) =>
       (blockManagerId.host + ":" + blockManagerId.port, mem)
     }
   }
@@ -1606,7 +1610,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   @DeveloperApi
   def getExecutorStorageStatus: Array[StorageStatus] = {
     assertNotStopped()
-    env.blockManager.master.getStorageStatus
+    env.blockManager.master.asInstanceOf[BMMMasterRole].getStorageStatus
   }
 
   /**
@@ -1663,7 +1667,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
    * Unpersist an RDD from memory and/or disk storage
    */
   override def unpersistRDD(rddId: Int, blocking: Boolean = true) {
-    env.blockManager.master.removeRdd(rddId, blocking)
+    env.blockManager.master.asInstanceOf[BMMMasterRole].removeRdd(rddId, blocking)
     persistentRdds.remove(rddId)
     listenerBus.post(SparkListenerUnpersistRDD(rddId))
   }

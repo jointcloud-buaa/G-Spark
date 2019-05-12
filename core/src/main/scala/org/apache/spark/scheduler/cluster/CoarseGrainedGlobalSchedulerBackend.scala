@@ -30,6 +30,7 @@ import org.apache.spark.rpc._
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.scheduler.cluster.CoarseGrainedGlobalSchedulerBackend._
+import org.apache.spark.storage.BMMMasterRole
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils}
 
 private[spark] class CoarseGrainedGlobalSchedulerBackend(
@@ -216,7 +217,8 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
             SparkListenerSiteDriverRemoved(System.currentTimeMillis(), sdriverId, reason.toString)
           )
         case None =>
-          scheduler.sc.env.blockManager.master.removeSiteDriverAsync(sdriverId)
+          scheduler.sc.env.blockManager
+            .master.asInstanceOf[BMMMasterRole].removeExecutorAsync(sdriverId)
           logInfo(s"Asked to remove non-existent executor $sdriverId")
       }
     }

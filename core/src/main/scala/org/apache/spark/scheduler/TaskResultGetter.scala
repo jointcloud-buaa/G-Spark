@@ -28,6 +28,7 @@ import org.apache.spark.TaskState.TaskState
 import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.siteDriver.TaskSchedulerImpl
+import org.apache.spark.storage.BMMMiddleRole
 import org.apache.spark.util.{LongAccumulator, ThreadUtils, Utils}
 
 /**
@@ -75,7 +76,7 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
             case IndirectTaskResult(blockId, size) =>
               if (!taskSetManager.canFetchMoreResults(size)) {
                 // dropped by executor if size is larger than maxResultSize
-                sparkEnv.blockManager.master.removeBlock(blockId)
+                sparkEnv.blockManager.master.asInstanceOf[BMMMiddleRole].removeBlock(blockId)
                 return
               }
               logDebug("Fetching indirect task result for TID %s".format(tid))
@@ -93,7 +94,7 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
                 serializedTaskResult.get.toByteBuffer)
               // force deserialization of referenced value
               deserializedResult.value(taskResultSerializer.get())
-              sparkEnv.blockManager.master.removeBlock(blockId)
+              sparkEnv.blockManager.master.asInstanceOf[BMMMiddleRole].removeBlock(blockId)
               (deserializedResult, size)
           }
 

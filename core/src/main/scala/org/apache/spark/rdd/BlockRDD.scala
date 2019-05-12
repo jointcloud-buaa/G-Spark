@@ -20,7 +20,7 @@ package org.apache.spark.rdd
 import scala.reflect.ClassTag
 
 import org.apache.spark._
-import org.apache.spark.storage.{BlockId, BlockManager}
+import org.apache.spark.storage.{BlockId, BlockManager, BMMMasterRole}
 
 private[spark] class BlockRDDPartition(val blockId: BlockId, idx: Int) extends Partition {
   val index = idx
@@ -63,7 +63,8 @@ class BlockRDD[T: ClassTag](sc: SparkContext, @transient val blockIds: Array[Blo
    */
   private[spark] def removeBlocks() {
     blockIds.foreach { blockId =>
-      sparkContext.env.blockManager.master.removeBlock(blockId)
+      sparkContext.env.blockManager.master.asInstanceOf[BMMMasterRole]
+        .removeBlock(blockId)
     }
     _isValid = false
   }

@@ -29,6 +29,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc._
 import org.apache.spark.scheduler.{ExecutorCacheTaskLocation, TaskLocation}
+import org.apache.spark.storage.BMMMasterRole
 import org.apache.spark.streaming.{StreamingContext, Time}
 import org.apache.spark.streaming.receiver._
 import org.apache.spark.streaming.util.WriteAheadLogUtils
@@ -413,7 +414,8 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
       val blockManagerId = ssc.sparkContext.env.blockManager.blockManagerId
       Seq(ExecutorCacheTaskLocation(blockManagerId.host, blockManagerId.executorId))
     } else {
-      ssc.sparkContext.env.blockManager.master.getMemoryStatus.filter { case (blockManagerId, _) =>
+      ssc.sparkContext.env.blockManager
+        .master.asInstanceOf[BMMMasterRole].getMemoryStatus.filter { case (blockManagerId, _) =>
         // Ignore the driver location
         blockManagerId.executorId != SparkContext.GLOBAL_DRIVER_IDENTIFIER
       }.map { case (blockManagerId, _) =>

@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.kafka010.KafkaSource._
 import org.apache.spark.sql.types._
+import org.apache.spark.storage.BMMMasterRole
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
@@ -355,7 +356,7 @@ private[kafka010] object KafkaSource {
 
   def getSortedExecutorList(sc: SparkContext): Array[String] = {
     val bm = sc.env.blockManager
-    bm.master.getPeers(bm.blockManagerId).toArray
+    bm.master.asInstanceOf[BMMMasterRole].getPeers(bm.blockManagerId).toArray
       .map(x => ExecutorCacheTaskLocation(x.host, x.executorId))
       .sortWith(compare)
       .map(_.toString)

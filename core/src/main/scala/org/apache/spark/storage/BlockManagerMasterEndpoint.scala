@@ -71,8 +71,8 @@ class BlockManagerMasterEndpoint(
   logInfo("BlockManagerMasterEndpoint up")
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint) =>
-      context.reply(register(blockManagerId, maxMemSize, slaveEndpoint))
+    case RegisterBlockManager(blockManagerId, maxMemSize, masterEndpoint, slaveEndpoint) =>
+      context.reply(register(blockManagerId, maxMemSize, masterEndpoint, slaveEndpoint))
 
     case _updateBlockInfo @
         UpdateBlockInfo(blockManagerId, blockId, storageLevel, deserializedSize, size) =>
@@ -104,39 +104,13 @@ class BlockManagerMasterEndpoint(
       context.reply(getMatchingBlockIds(filter, askSlaves))
 
     case RemoveRdd(rddId, level) =>
-      // 这里做区分主要是，SlaveEndpoint返回的是Int，但是MasterEndpoint返回的是Future[Seq[Int]]
-      // 因此，在一级级地往下传播消息后，再将值一级级往上返回的过程中，需要统一下返回值的类型
-      if (level == 0) {
         context.reply(removeRdd(rddId, level))
-      } else {  // 在第二及更高级，应该将返回的结果聚合后再往上返回
-        removeRdd(rddId, level).onComplete {
-          case Success(values) => context.reply(values.sum)
-          case Failure(e) => context.sendFailure(e)
-        }
-      }
 
     case RemoveShuffle(shuffleId, level) =>
-      if (level == 0) {
         context.reply(removeShuffle(shuffleId, level))
-      } else {  // 在回传结果时，进行聚合
-        removeShuffle(shuffleId, level).onComplete {
-          case Success(values) => context.reply(values.forall(v => v))
-          case Failure(e) => context.sendFailure(e)
-        }
-      }
 
     case RemoveBroadcast(broadcastId, removeFromDriver, level) =>
-      // TODO-lzp: 如何指定传播的级别
-      if (level == 1) {  // 目前在一级处，就将广播中断
-        // 返回Int, 相当于代理了本地的SlaveEndpoint
-        removeLocalBroadcast(broadcastId).onComplete {
-          case Success(value) => context.reply(value)
-          case Failure(exception) => context.sendFailure(exception)
-        }
-      } else {
-        // 返回Future[Seq[Int]]
         context.reply(removeBroadcast(broadcastId, removeFromDriver, level))
-      }
 
     case RemoveBlock(blockId, level) =>
       removeBlockFromWorkers(blockId, level)
@@ -173,13 +147,13 @@ class BlockManagerMasterEndpoint(
       }
   }
 
-  private def removeRdd(rddId: Int, level: Int): Future[Seq[Int]] = {
+  private def removeRdd(rddId: Int, level: Int): Future[Seq[(Option[Int], Int)]] = {
     // First remove the metadata for the given RDD, and then asynchronously remove the blocks
     // from the slaves.
 
     // Find all blocks for the given RDD, remove the block from both blockLocations and
     // the blockManagerInfo that is tracking the blocks.
-    // 移除本地保存的一些块的追踪信息
+    // 移除本地保存的一些块的追踪信息, 不是真正的块数据
     //                                              asRDDId为Option[RDDBlockId], 所以需要flatMap
     val blocks = blockLocations.asScala.keys.flatMap(_.asRDDId).filter(_.rddId == rddId)
     blocks.foreach { blockId =>
@@ -191,20 +165,44 @@ class BlockManagerMasterEndpoint(
     // Ask the slaves to remove the RDD, and put the result in a sequence of Futures.
     // The dispatcher is used as an implicit argument into the Future sequence construction.
     val removeMsg = RemoveRdd(rddId, level + 1)
+    // TODO-lzp: 可能会出错的地方在于，多级信息获取时的超时，特别是GD/SD的超时要设置的较长
     Future.sequence(
       blockManagerInfo.values.map { bm =>
-        // 这里也有一级级下传的递归意思
-        bm.slaveEndpoint.ask[Int](removeMsg)
+        // masterEndpoint返回的类型是Seq[(Option[Int], Int)]，此处将其相加
+        val m = bm.masterEndpoint.map(
+          _.ask[Seq[(Option[Int], Int)]](removeMsg).map(
+            _.map{case (v1, v2) => v1.getOrElse(0) + v2}.sum
+          )
+        )
+        val s = bm.slaveEndpoint.ask[Int](removeMsg)
+        m match {
+          case Some(mv) =>
+            mv.flatMap(mm => s.map(ss => (Some(mm), ss)))
+          case None =>
+            s.map(ss => (None, ss))
+        }
       }.toSeq
     )
   }
 
-  private def removeShuffle(shuffleId: Int, level: Int): Future[Seq[Boolean]] = {
+  private def removeShuffle(shuffleId: Int, level: Int): Future[Seq[(Option[Boolean], Boolean)]] = {
     // Nothing to do in the BlockManagerMasterEndpoint data structures
     val removeMsg = RemoveShuffle(shuffleId, level + 1)
     Future.sequence(
       blockManagerInfo.values.map { bm =>
-        bm.slaveEndpoint.ask[Boolean](removeMsg)
+        val m = bm.masterEndpoint.map(
+          _.ask[Seq[(Option[Boolean], Boolean)]](removeMsg).map(
+            // v1为从每个节点的masterEndpoint获取的值，其为None表示没有master，则默认为true
+            _.map{case (v1, v2) => v1.getOrElse(true) && v2}.forall(b => b)
+          )
+        )
+        val s = bm.slaveEndpoint.ask[Boolean](removeMsg)
+        m match {
+          case Some(mv) =>
+            mv.flatMap(mm => s.map(ss => (Some(mm), ss)))
+          case None =>
+            s.map(ss => (None, ss))
+        }
       }.toSeq
     )
   }
@@ -214,32 +212,36 @@ class BlockManagerMasterEndpoint(
    * of all broadcast blocks. If removeFromDriver is false, broadcast blocks are only removed
    * from the executors, but not from the driver.
    */
+  // 这里的removeFromDriver应该理解为是否移除level为0时的当前节点的广播变量, 除此外，当level>0时，应该移除
+  // 所有广播变量. 则不从driver移除的条件是：不允许移除 且 level为0 且 不为当前节点
   private def removeBroadcast(
-    broadcastId: Long, removeFromDriver: Boolean, level: Int): Future[Seq[Int]] = {
+    broadcastId: Long, removeFromDriver: Boolean, level: Int): Future[Seq[(Option[Int], Int)]] = {
     val removeMsg = RemoveBroadcast(broadcastId, removeFromDriver, level + 1)
     val requiredBlockManagers = blockManagerInfo.values.filter { info =>
-      removeFromDriver ||
-        (Utils.isGDriver(execId) && !info.blockManagerId.isDriver) ||
-        (Utils.isSDriver(execId) && !info.blockManagerId.isSiteDriver)
+      // 要么允许从driver中移除，要么level不为0，要么不为当前节点
+      removeFromDriver || level != 0 || info.blockManagerId.executorId != execId
     }
     Future.sequence(
       requiredBlockManagers.map { bm =>
-        // 向普通的slaveEndpoint发送，返回Int
-        // 因此，要保证在向masterEndpoint发送，在广播层级达到要求后，其也要返回Int
-        bm.slaveEndpoint.ask[Int](removeMsg)
+        val s = bm.slaveEndpoint.ask[Int](removeMsg)
+        // TODO-lzp: 此处指定传播指定层级
+        if (level == 0) {
+          val m = bm.masterEndpoint.map(
+            _.ask[Seq[(Option[Int], Int)]](removeMsg).map(
+              _.map{case (v1, v2) => v1.getOrElse(0) + v2}.sum
+            )
+          )
+          m match {
+            case Some(mv) =>
+              mv.flatMap(mm => s.map(ss => (Some(mm), ss)))
+            case None =>
+              s.map(ss => (None, ss))
+          }
+        } else {
+          s.map(ss => (None, ss))
+        }
       }.toSeq
     )
-  }
-
-  // 发送给本地的SlaveEndpoint
-  private def removeLocalBroadcast(broadcastId: Long): Future[Int] = {
-    // 后两个元素并不重要
-    val removeMsg = RemoveBroadcast(broadcastId, false, -1)
-    val localEndpoint = blockManagerInfo.values.filter { info =>
-      (Utils.isGDriver(execId) && info.blockManagerId.isDriver) ||
-        (Utils.isSDriver(execId) && info.blockManagerId.isSiteDriver)
-    }.head
-    localEndpoint.slaveEndpoint.ask[Int](removeMsg)
   }
 
   private def removeBlockManager(blockManagerId: BlockManagerId) {
@@ -310,6 +312,7 @@ class BlockManagerMasterEndpoint(
           // If message loss becomes frequent, we should add retry logic here.
           // 这里也有意思，GD的slaveEndpoint是SlaveEndpoint，而SD的slaveEndpoint是MasterEndpoint
           blockManager.get.slaveEndpoint.ask[Boolean](RemoveBlock(blockId, level + 1))
+          blockManager.get.masterEndpoint.foreach(_.ask[Boolean](RemoveBlock(blockId, level + 1)))
         }
       }
     }
@@ -348,6 +351,7 @@ class BlockManagerMasterEndpoint(
     blockManagerInfo.values.map { info =>
       val blockStatusFuture =
         if (askSlaves) {
+          // 此处特意不向下一级的masterEndpoint询问,因为假设了块的状态只会存在于连续的两个层级间
           info.slaveEndpoint.ask[Option[BlockStatus]](getBlockStatus)
         } else {
           Future { info.getStatus(blockId) }
@@ -387,6 +391,7 @@ class BlockManagerMasterEndpoint(
   private def register(
       idWithoutTopologyInfo: BlockManagerId,
       maxMemSize: Long,
+      masterEndpoint: Option[RpcEndpointRef],
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
 
     // the dummy id is not expected to contain the topology information.
@@ -413,7 +418,7 @@ class BlockManagerMasterEndpoint(
       blockManagerIdByExecutor(id.executorId) = id
 
       blockManagerInfo(id) = new BlockManagerInfo(
-        id, System.currentTimeMillis(), maxMemSize, slaveEndpoint)
+        id, System.currentTimeMillis(), maxMemSize, masterEndpoint, slaveEndpoint)
     }
     listenerBus.foreach(_.post(SparkListenerBlockManagerAdded(time, id, maxMemSize)))
     id
@@ -427,7 +432,7 @@ class BlockManagerMasterEndpoint(
       diskSize: Long): Boolean = {
 
     if (!blockManagerInfo.contains(blockManagerId)) {
-      if (blockManagerId.isDriver && !isLocal) {
+      if (blockManagerId.executorId == execId && !isLocal) {
         // We intentionally do not register the master (except in local mode),
         // so we should not indicate failure.
         return true
@@ -465,6 +470,8 @@ class BlockManagerMasterEndpoint(
   }
 
   private def getLocations(blockId: BlockId): Seq[BlockManagerId] = {
+    logInfo(s"##lizp##: in $execId in getLocations: get $blockId")
+    logInfo(s"##lizp##: all blocks is " + blockLocations.keySet())
     if (blockLocations.containsKey(blockId)) blockLocations.get(blockId).toSeq else Seq.empty
   }
 
@@ -490,12 +497,13 @@ class BlockManagerMasterEndpoint(
   /**
    * Returns an [[RpcEndpointRef]] of the [[BlockManagerSlaveEndpoint]] for sending RPC messages.
    */
-  private def getExecutorEndpointRef(executorId: String): Option[RpcEndpointRef] = {
+  private def getExecutorEndpointRef(executorId: String)
+  : Option[(Option[RpcEndpointRef], RpcEndpointRef)] = {
     for (
       blockManagerId <- blockManagerIdByExecutor.get(executorId);
       info <- blockManagerInfo.get(blockManagerId)
     ) yield {
-      info.slaveEndpoint
+      (info.masterEndpoint, info.slaveEndpoint)
     }
   }
 
@@ -518,6 +526,7 @@ private[spark] class BlockManagerInfo(
     val blockManagerId: BlockManagerId,
     timeMs: Long,
     val maxMem: Long,
+  val masterEndpoint: Option[RpcEndpointRef],
     val slaveEndpoint: RpcEndpointRef)
   extends Logging {
 

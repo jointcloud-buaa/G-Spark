@@ -20,7 +20,7 @@ package org.apache.spark.streaming.dstream
 import scala.reflect.ClassTag
 
 import org.apache.spark.rdd.{BlockRDD, RDD}
-import org.apache.spark.storage.BlockId
+import org.apache.spark.storage.{BlockId, BMMMasterRole}
 import org.apache.spark.streaming.{StreamingContext, Time}
 import org.apache.spark.streaming.rdd.WriteAheadLogBackedBlockRDD
 import org.apache.spark.streaming.receiver.Receiver
@@ -117,7 +117,7 @@ abstract class ReceiverInputDStream[T: ClassTag](_ssc: StreamingContext)
           }
         }
         val validBlockIds = blockIds.filter { id =>
-          ssc.sparkContext.env.blockManager.master.contains(id)
+          ssc.sparkContext.env.blockManager.master.asInstanceOf[BMMMasterRole].contains(id)
         }
         if (validBlockIds.length != blockIds.length) {
           logWarning("Some blocks could not be recovered as they were not found in memory. " +
