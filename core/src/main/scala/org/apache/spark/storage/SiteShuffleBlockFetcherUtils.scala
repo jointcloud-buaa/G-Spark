@@ -50,7 +50,6 @@ object SiteShuffleBlockFetcherUtils extends Logging {
           fileBufferSize, taskMetrics.shuffleWriteMetrics)
         while (recordIter.hasNext) {
           val cur = recordIter.next()
-          logInfo(s"##lizp##: $cur")
           writer.write(cur._1, cur._2)
         }
         val segment = writer.commitAndGet()

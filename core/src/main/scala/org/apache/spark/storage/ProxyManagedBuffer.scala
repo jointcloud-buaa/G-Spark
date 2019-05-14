@@ -22,6 +22,7 @@ import java.nio.ByteBuffer
 import scala.concurrent.Promise
 import scala.concurrent.duration.Duration
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.network.shuffle.{BlockFetchingListener, ShuffleClient}
 import org.apache.spark.util.ThreadUtils

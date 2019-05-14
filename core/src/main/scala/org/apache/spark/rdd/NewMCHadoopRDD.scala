@@ -17,6 +17,7 @@
 package org.apache.spark.rdd
 
 import java.io.IOException
+import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.{Date, Locale}
 
@@ -45,7 +46,7 @@ private[spark] class NewMCHadoopPartition(
   rddId: Int,
   val index: Int,
   rawSplit: InputSplit with Writable,
-  // 因为Split在序列化时可能不包含位置信息
+  // 因为Split在序列化时可能不包含位置信息, 而SplitLocationInfo不能序列化
   val hosts: Array[String],
   val inMemory: Array[Boolean]
 ) extends Partition {
@@ -112,7 +113,6 @@ class NewMCHadoopRDD[K, V](
     paths.flatMap { case (clusterName, path) =>
       val host = clusterToHost(clusterName)
       val webPath = s"webhdfs://$host:14000/$path"
-      val hdfsPath = s"hdfs://$clusterName/$path"
       FileSystem.getLocal(_conf)
       val job = Job.getInstance(_conf)
       FileInputFormat.setInputPaths(job, webPath)
@@ -132,13 +132,17 @@ class NewMCHadoopRDD[K, V](
       for (i <- 0 until rawSplits.size) {
         val sp = rawSplits(i).asInstanceOf[FileSplit]
         dataDistState += Map(host -> sp.getLength)
+        val newPathStr = s"hdfs://$clusterName${new URI(sp.getPath.toString).getPath}"
         result(i) = new NewMCHadoopPartition(
           id,
           i + startIdx,
-          new FileSplit(new Path(hdfsPath), sp.getStart, sp.getLength, sp.getLocations)
+          new FileSplit(new Path(newPathStr), sp.getStart, sp.getLength, sp.getLocations)
               .asInstanceOf[InputSplit with Writable],
           sp.getLocations,
-          sp.getLocationInfo.map(_.isInMemory)
+          // 因为getLocationInfo是可能为null的
+          Option(sp.getLocationInfo).map(_.map(_.isInMemory)).getOrElse(
+            Array.fill[Boolean](sp.getLocations.length)(false)
+          )
         )
       }
       startIdx += result.length
