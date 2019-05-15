@@ -19,11 +19,12 @@ package org.apache.spark.siteDriver
 
 import java.io.{File, NotSerializableException}
 import java.util.Properties
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{Executors, TimeUnit}
 
 import scala.annotation.tailrec
 import scala.collection.Map
 import scala.collection.mutable.{HashMap, HashSet, Map => MMap}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
 import scala.language.existentials
 import scala.language.postfixOps
@@ -34,8 +35,6 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.Logging
-import org.apache.spark.network.buffer.ManagedBuffer
-import org.apache.spark.network.shuffle.BlockFetchingListener
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
@@ -92,6 +91,8 @@ class StageScheduler(
 
   private[siteDriver] val shuffleIdToShuffleInfo = new HashMap[Int, (SerializerInstance, Int)]()
 
+  private[siteDriver] val blockManagerIdToTaskContext = new HashMap[BlockManagerId, TaskContext]
+
   // Application dependencies (added through SparkContext) that we've fetched so far on this node.
   // Each map holds the master's timestamp for the version of that file or JAR we got.
   // 表示获取的依赖
@@ -131,6 +132,8 @@ class StageScheduler(
   private val messageScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("dag-scheduler-message")
 
+  private val remoteShuffleExecutor =
+    ExecutionContext.fromExecutor(Executors.newFixedThreadPool(8))
 
   private[siteDriver] val eventProcessLoop = new StageSchedulerEventProcessLoop(this)
   taskScheduler.setStageScheduler(this)
@@ -260,7 +263,7 @@ class StageScheduler(
         val partResults = mapOutputTracker.getRemoteShuffleFetchResult(shuffleId)(ms.location)
         val blocks = partIds.filterNot(p => partResults(p)._1).flatMap { p =>
           val size = ms.getSizeForBlock(p)
-          if (size > 0) Some(RemoteShuffleBlockId(shuffleId, p))  // 空块过滤
+          if (size > 0) Some((RemoteShuffleBlockId(shuffleId, p), size))  // 空块过滤
           else { // 对于大小<=0的块，不拉取，直接修改状态
             mapOutputTracker.registerRemoteShuffleFetchResult(
               shuffleId, p, ms.location, (true, 0))
@@ -279,45 +282,41 @@ class StageScheduler(
     // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
     bmIdToBlockIds.foreach { case (bmId, blocks) =>
       if (blocks.nonEmpty) {
-        fetchRemoteShuffleStart(blocks, bmId)
+        // 异步拉取，考虑到在方法内部使用了FetcherIterator, 其在迭代时会阻塞
+        val f = Future {
+          SiteShuffleBlockFetcherUtils.fetchRemoteShuffleBlocks(
+            conf, TaskContext.empty(), (bmId, blocks.toSeq),
+            shuffleIdToShuffleInfo.mapValues(_._1).toMap,
+            env.blockManager, env.serializerManager, mapOutputTracker
+          )
+        }(remoteShuffleExecutor)
+        f.onComplete{
+          case scala.util.Success((sread, swrite)) =>
+            // TODO-lzp: 感觉这些其实可以汇报给GlobalDriver的， 参与Executor的心跳
+            logInfo(s"fetch successed! from $bmId with ${blocks.size} blocks")
+            logInfo(
+              s"""##lizp##: metrics is
+                 |shuffleRead
+                 |  fetchWaitTime: ${sread.fetchWaitTime}
+                 |  recordsRead: ${sread.recordsRead}
+                 |  remoteBlocksFetched: ${sread.remoteBlocksFetched}
+                 |  remoteByteRead: ${sread.remoteBytesRead}
+                 |  localBlocksFetched: ${sread.localBlocksFetched}
+                 |  localByteRead: ${sread.localBytesRead}
+                 |shuffleWrite
+                 |  writeTime: ${swrite.writeTime}
+                 |  recordsWritten: ${swrite.recordsWritten}
+                 |  bytesWritten: ${swrite.bytesWritten}
+               """.stripMargin)
+          case scala.util.Failure(e) =>
+            logInfo(s"fetch failed! from $bmId with ${blocks.size} blocks")
+        }(remoteShuffleExecutor)
       }
     }
 
     stageIdToStage(stage.id) = stage
 
     eventProcessLoop.post(StageSubmitted(jobId, stage))
-  }
-
-  // TODO-lzp: 增加重试机制
-  def fetchRemoteShuffleStart(
-    blockIds: Array[RemoteShuffleBlockId], blockMId: BlockManagerId): Unit = {
-
-    val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
-
-    env.blockManager.shuffleClient.fetchBlocks(
-      blockMId.host, blockMId.port, blockMId.executorId, blockIds.map(_.toString),
-      new BlockFetchingListener {
-        override def onBlockFetchSuccess(blockId: String, data: ManagedBuffer): Unit = {
-          assert(data.size() != 0, s"the $blockId's data size is 0, It's error!!")
-          val newBlockId = BlockId(blockId).asInstanceOf[RemoteShuffleBlockId]
-          val hostBlockId = HostAwareShuffleBlockId(
-            blockMId.hostPort, newBlockId.shuffleId, newBlockId.reduceId)
-          val serInstance = shuffleIdToShuffleInfo(newBlockId.shuffleId)._1
-          val rst = SiteShuffleBlockFetcherUtils.writeAsBlockFile(
-            hostBlockId, data, fileBufferSize,
-            serializerInstance = serInstance
-          )
-          mapOutputTracker.registerRemoteShuffleFetchResult(
-            newBlockId.shuffleId, newBlockId.reduceId, blockMId, rst
-          )
-        }
-
-        // TODO-lzp: 在块获取失败后，应该思考下如何处理,增加重试或异常
-        override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
-          logInfo(s"fetch $blockId failed, because of $exception")
-        }
-      }
-    )
   }
 
   /**

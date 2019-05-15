@@ -16,57 +16,109 @@
  */
 package org.apache.spark.storage
 
-import java.io.{InputStream, IOException}
+import java.io.IOException
 
-import org.apache.spark.SparkEnv
-import org.apache.spark.executor.TaskMetrics
+import org.apache.spark.{InterruptibleIterator, MapOutputTracker, MapOutputTrackerMasterRole, SparkConf, SparkEnv, TaskContext, TaskContextImpl}
+import org.apache.spark.executor.{ShuffleReadMetrics, ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.internal.Logging
-import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{CompletionIterator, Utils}
 
 object SiteShuffleBlockFetcherUtils extends Logging {
-  def writeAsBlockFile(
-    blockId: BlockId,
-    buf: ManagedBuffer,
-    fileBufferSize: Int,
+
+  def fetchRemoteShuffleBlocks(
+    conf: SparkConf,
+    context: TaskContext,
+    blocksByAddress: (BlockManagerId, Seq[(RemoteShuffleBlockId, Long)]),
+    shuffleIdToSerInstances: Map[Int, SerializerInstance],
     blockManager: BlockManager = SparkEnv.get.blockManager,
     serializerManager: SerializerManager = SparkEnv.get.serializerManager,
+    mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker
+  ): (ShuffleReadMetrics, ShuffleWriteMetrics) = {
+    val maxBytesInFlight = conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024
+    val maxReqsInFlight = conf.getInt("spark.reducer.maxReqsInFlight", Int.MaxValue)
+    val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
+
+    try {
+      // 拉取数据
+      val blockFetcherItr = new ShuffleBlockFetcherIterator(
+        context,
+        blockManager.shuffleClient,
+        blockManager,
+        Seq(blocksByAddress),
+        None,
+        maxBytesInFlight,
+        maxReqsInFlight
+      )
+      val readMetrics = context.taskMetrics().createTempShuffleReadMetrics()
+      blockFetcherItr.foreach { case (blockId, inputStream) =>
+        logInfo(s"##lizp##: handle $blockId from ${blocksByAddress._1}")
+        val newBlockId = blockId.asInstanceOf[RemoteShuffleBlockId]
+        val wrappedStreams = serializerManager.wrapStream(blockId, inputStream)
+        val recordIter = shuffleIdToSerInstances(newBlockId.shuffleId)
+          .deserializeStream(wrappedStreams).asKeyValueIterator
+        val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
+          recordIter.map { record =>
+            readMetrics.incRecordsRead(1)
+            record
+          }, ()
+        )
+        val interruptibleIter = new InterruptibleIterator[(Any, Any)](context, metricIter)
+        // 写数据
+        val hostBlockId = HostAwareShuffleBlockId(
+          blocksByAddress._1.hostPort, newBlockId.shuffleId, newBlockId.reduceId
+        )
+        val rst = writeAsBlockFile(
+          hostBlockId, interruptibleIter, fileBufferSize, blockManager,
+          shuffleIdToSerInstances(newBlockId.shuffleId), context.taskMetrics()
+        )
+        // 更新结果
+        mapOutputTracker.asInstanceOf[MapOutputTrackerMasterRole]
+          .registerRemoteShuffleFetchResult(
+            newBlockId.shuffleId, newBlockId.reduceId, blocksByAddress._1, rst
+          )
+      }
+      context.taskMetrics().mergeShuffleReadMetrics()
+    } finally {
+      // 结束task，清理fetcher中的一些结果
+      context.asInstanceOf[TaskContextImpl].markTaskCompleted()
+    }
+    (context.taskMetrics().shuffleReadMetrics, context.taskMetrics().shuffleWriteMetrics)
+  }
+
+  def writeAsBlockFile(
+    blockId: BlockId,
+    recordIter: Iterator[(Any, Any)],
+    fileBufferSize: Int,
+    blockManager: BlockManager = SparkEnv.get.blockManager,
     // 这个很关键，序列化和反序列化原则上尽量用同一个序列化器实例, 比如对于ShuffleDependency
     serializerInstance: SerializerInstance = SparkEnv.get.serializer.newInstance(),
     taskMetrics: TaskMetrics = TaskMetrics.empty  // TODO-lzp: 应该如何使用它
   ): (Boolean, Long) = {
-    var inputStream: InputStream = null
     var writeSuccess = false
     var dataLen: Long = 0
+    val dataFile = blockManager.diskBlockManager.getFile(blockId)
+    val tmp = Utils.tempFileWith(dataFile)
+    var writer: DiskBlockObjectWriter = null
     try {
-      inputStream = buf.createInputStream()
-      val wrappedStreams = serializerManager.wrapStream(blockId, inputStream)
-      val recordIter = serializerInstance.deserializeStream(wrappedStreams).asKeyValueIterator
-      val dataFile = blockManager.diskBlockManager.getFile(blockId)
-      val tmp = Utils.tempFileWith(dataFile)
-      try {
-        val writer = blockManager.getDiskWriter(blockId, tmp, serializerInstance,
-          fileBufferSize, taskMetrics.shuffleWriteMetrics)
-        while (recordIter.hasNext) {
-          val cur = recordIter.next()
-          writer.write(cur._1, cur._2)
-        }
-        val segment = writer.commitAndGet()
-        writer.close()
-        if (dataFile.exists()) dataFile.delete()
-        if (tmp != null && tmp.exists() && !tmp.renameTo(dataFile)) {
-          throw new IOException(s"fail to rename file $tmp to $dataFile")
-        }
-        writeSuccess = true
-        dataLen = segment.length
-      } finally {
-        if (tmp.exists() && !tmp.delete()) {
-          logError(s"Error while deleting temp file ${tmp.getAbsolutePath}")
-        }
+      writer = blockManager.getDiskWriter(blockId, tmp, serializerInstance,
+        fileBufferSize, taskMetrics.shuffleWriteMetrics)
+      while (recordIter.hasNext) {
+        val cur = recordIter.next()
+        writer.write(cur._1, cur._2)
       }
+      val segment = writer.commitAndGet()
+      if (dataFile.exists()) dataFile.delete()
+      if (tmp != null && tmp.exists() && !tmp.renameTo(dataFile)) {
+        throw new IOException(s"fail to rename file $tmp to $dataFile")
+      }
+      writeSuccess = true
+      dataLen = segment.length
     } finally {
-      inputStream.close()
+      writer.close()
+      if (tmp.exists() && !tmp.delete()) {
+        logError(s"Error while deleting temp file ${tmp.getAbsolutePath}")
+      }
     }
     (writeSuccess, dataLen)
   }

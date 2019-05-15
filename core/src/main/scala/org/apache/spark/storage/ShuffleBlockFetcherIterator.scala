@@ -165,6 +165,8 @@ final class ShuffleBlockFetcherIterator(
   private[this] def sendRequest(req: FetchRequest) {
     logDebug("Sending request for %d blocks (%s) from %s".format(
       req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
+    logInfo("Sending request for %d blocks (%s) from %s".format(
+      req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
     bytesInFlight += req.size
     reqsInFlight += 1
 
@@ -311,15 +313,13 @@ final class ShuffleBlockFetcherIterator(
     fetchLocalBlocks()
     logDebug("Got local blocks in " + Utils.getUsedTimeMs(startTime))
 
-    if (extraFetch.isDefined) {
-      val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch.get(requestId.get())
+    extraFetch.foreach { fetcher =>
+      val (rid, extraBmId, extraBlocks, nonFinished) = fetcher(requestId.get())
       requestId.set(rid)
       // 会在内部更新numBlocksToFetch
       val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
       fetchRequests ++= Utils.randomize(extraRemoteRequests)
       nonFinishedExtraBlocks.set(nonFinished)
-    } else {
-      logInfo(s"##lizp##: extraFetch is not defined")
     }
   }
 
