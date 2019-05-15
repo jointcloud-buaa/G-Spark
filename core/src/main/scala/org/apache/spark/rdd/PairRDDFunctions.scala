@@ -34,6 +34,7 @@ import org.apache.hadoop.io.SequenceFile.CompressionType
 import org.apache.hadoop.io.compress.CompressionCodec
 import org.apache.hadoop.mapred.{FileOutputCommitter, FileOutputFormat, JobConf, OutputFormat}
 import org.apache.hadoop.mapreduce.{Job => NewAPIHadoopJob, MRJobConfig, OutputFormat => NewOutputFormat, RecordWriter => NewRecordWriter, TaskAttemptID, TaskType}
+import org.apache.hadoop.mapreduce.lib.output.{FileOutputCommitter => NewFileOutputCommitter}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 
 import org.apache.spark._
@@ -1124,6 +1125,8 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
       config.set(MRJobConfig.OUTPUT_FORMAT_CLASS_ATTR,
         _config.get(MRJobConfig.OUTPUT_FORMAT_CLASS_ATTR))
       config.set("mapred.output.dir", _config.get("mapred.output.dir"))
+      // 为了直接在Task执行后，即将写入的文件移到输出目录中，使用commit算法的第2版本，在#commitTask中
+      config.setInt(NewFileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION, 2)
 
       /* "reduce task" <split #> <attempt # = spark task #> */
       val attemptId = new TaskAttemptID(jobtrackerID, stageId, TaskType.REDUCE, context.partitionId,
@@ -1135,6 +1138,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
         case _ => ()
       }
       val committer = format.getOutputCommitter(hadoopContext)
+      logInfo(s"##lizp##: the committer's class is ${committer.getClass}")
       committer.setupTask(hadoopContext)
 
       val outputMetricsAndBytesWrittenCallback: Option[(OutputMetrics, () => Long)] =
