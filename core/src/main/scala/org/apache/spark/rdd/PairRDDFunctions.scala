@@ -33,7 +33,7 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.io.SequenceFile.CompressionType
 import org.apache.hadoop.io.compress.CompressionCodec
 import org.apache.hadoop.mapred.{FileOutputCommitter, FileOutputFormat, JobConf, OutputFormat}
-import org.apache.hadoop.mapreduce.{Job => NewAPIHadoopJob, OutputFormat => NewOutputFormat, RecordWriter => NewRecordWriter, TaskAttemptID, TaskType}
+import org.apache.hadoop.mapreduce.{Job => NewAPIHadoopJob, MRJobConfig, OutputFormat => NewOutputFormat, RecordWriter => NewRecordWriter, TaskAttemptID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 
 import org.apache.spark._
@@ -978,6 +978,27 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     saveAsHadoopFile(path, keyClass, valueClass, runtimeClass.asInstanceOf[Class[F]], codec)
   }
 
+  def saveAsNewMCHadoopFile[F <: NewOutputFormat[K, V]](
+    path: String)(implicit fm: ClassTag[F]): Unit = self.withScope {
+    saveAsNewMCHadoopFile(path, keyClass, valueClass, fm.runtimeClass.asInstanceOf[Class[F]])
+  }
+
+  def saveAsNewMCHadoopFile(
+    path: String,
+    keyClass: Class[_],
+    valueClass: Class[_],
+    outputFormatClass: Class[_ <: NewOutputFormat[_, _]],
+    conf: Configuration = self.context.hadoopConfiguration): Unit = self.withScope {
+    val hadoopConf = conf
+    val job = NewAPIHadoopJob.getInstance(hadoopConf)
+    job.setOutputKeyClass(keyClass)
+    job.setOutputValueClass(valueClass)
+    job.setOutputFormatClass(outputFormatClass)
+    val jobConfiguration = job.getConfiguration
+    jobConfiguration.set("mapred.output.dir", path)
+    saveAsNewMCHadoopDataset(jobConfiguration)
+  }
+
   /**
    * Output the RDD to any Hadoop-supported file system, using a new Hadoop API `OutputFormat`
    * (mapreduce.OutputFormat) object supporting the key and value types K and V in this RDD.
@@ -1072,6 +1093,94 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     FileOutputFormat.setOutputPath(hadoopConf,
       SparkHadoopWriter.createPathFromString(path, hadoopConf))
     saveAsHadoopDataset(hadoopConf)
+  }
+
+  def saveAsNewMCHadoopDataset(conf: Configuration): Unit = self.withScope {
+    // Rename this as hadoopConf internally to avoid shadowing (see SPARK-2038).
+    val hadoopConf = conf
+    val job = NewAPIHadoopJob.getInstance(hadoopConf)
+    val formatter = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
+    val jobtrackerID = formatter.format(new Date())
+    val stageId = self.id
+    val jobConfiguration = job.getConfiguration
+    val wrappedConf = new SerializableConfiguration(jobConfiguration)
+    val outfmt = job.getOutputFormatClass
+    val jobFormat = outfmt.newInstance
+
+    if (isOutputSpecValidationEnabled) {
+      // FileOutputFormat ignores the filesystem parameter
+      jobFormat.checkOutputSpecs(job)
+    }
+
+    val writeShard = (context: TaskContext, iter: Iterator[(K, V)]) => {
+      // TODO-lzp: 虽然可以正常工作，但是也要认识到，这个实现是有问题的。即hadoopConfiguration应该是在
+      //           SiteDriver和Executor之间序列化传递的，但是这里相当于使用了Executor本地的hadoop配置
+      // 修改的核心要义是，不要直接使用序列化的配置，因为这个配置是从globalDriver上序列化传输下来的，其
+      // hadoop配置取决于GD所在节点的配置。而事实上，我们要使用的是各集群自己的配置
+      val _config = wrappedConf.value
+      val config = new Configuration()
+      config.set(MRJobConfig.OUTPUT_KEY_CLASS, _config.get(MRJobConfig.OUTPUT_KEY_CLASS))
+      config.set(MRJobConfig.OUTPUT_VALUE_CLASS, _config.get(MRJobConfig.OUTPUT_VALUE_CLASS))
+      config.set(MRJobConfig.OUTPUT_FORMAT_CLASS_ATTR,
+        _config.get(MRJobConfig.OUTPUT_FORMAT_CLASS_ATTR))
+      config.set("mapred.output.dir", _config.get("mapred.output.dir"))
+
+      /* "reduce task" <split #> <attempt # = spark task #> */
+      val attemptId = new TaskAttemptID(jobtrackerID, stageId, TaskType.REDUCE, context.partitionId,
+        context.attemptNumber)
+      val hadoopContext = new TaskAttemptContextImpl(config, attemptId)
+      val format = outfmt.newInstance
+      format match {
+        case c: Configurable => c.setConf(config)
+        case _ => ()
+      }
+      val committer = format.getOutputCommitter(hadoopContext)
+      committer.setupTask(hadoopContext)
+
+      val outputMetricsAndBytesWrittenCallback: Option[(OutputMetrics, () => Long)] =
+        initHadoopOutputMetrics(context)
+
+      val writer = format.getRecordWriter(hadoopContext).asInstanceOf[NewRecordWriter[K, V]]
+      require(writer != null, "Unable to obtain RecordWriter")
+      var recordsWritten = 0L
+      Utils.tryWithSafeFinallyAndFailureCallbacks {
+        while (iter.hasNext) {
+          val pair = iter.next()
+          writer.write(pair._1, pair._2)
+
+          // Update bytes written metric every few records
+          maybeUpdateOutputMetrics(outputMetricsAndBytesWrittenCallback, recordsWritten)
+          recordsWritten += 1
+        }
+      }(finallyBlock = writer.close(hadoopContext))
+      committer.commitTask(hadoopContext)
+      outputMetricsAndBytesWrittenCallback.foreach { case (om, callback) =>
+        om.setBytesWritten(callback())
+        om.setRecordsWritten(recordsWritten)
+      }
+      1
+    } : Int
+
+    val jobAttemptId = new TaskAttemptID(jobtrackerID, stageId, TaskType.MAP, 0, 0)
+    val jobTaskContext = new TaskAttemptContextImpl(wrappedConf.value, jobAttemptId)
+    val jobCommitter = jobFormat.getOutputCommitter(jobTaskContext)
+
+    // When speculation is on and output committer class name contains "Direct", we should warn
+    // users that they may loss data if they are using a direct output committer.
+    val speculationEnabled = self.conf.getBoolean("spark.speculation", false)
+    val outputCommitterClass = jobCommitter.getClass.getSimpleName
+    if (speculationEnabled && outputCommitterClass.contains("Direct")) {
+      val warningMessage =
+        s"$outputCommitterClass may be an output committer that writes data directly to " +
+          "the final location. Because speculation is enabled, this output committer may " +
+          "cause data loss (see the case in SPARK-10063). If possible, please use an output " +
+          "committer that does not have this behavior (e.g. FileOutputCommitter)."
+      logWarning(warningMessage)
+    }
+
+    jobCommitter.setupJob(jobTaskContext)
+    self.context.runJob(self, writeShard)
+    jobCommitter.commitJob(jobTaskContext)
   }
 
   /**
