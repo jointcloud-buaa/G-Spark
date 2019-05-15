@@ -1063,31 +1063,21 @@ class DAGScheduler(
     // TODO-lzp: 如何没有启动SiteDriver呢？？
     val allHosts = clusterToHost.values.toArray
 
-    val hostToParts = MMap.empty[String, ArrayBuffer[Int]]
-    if (allHosts.length == 1) {
-      hostToParts(allHosts(0)) = ArrayBuffer(needHandlePartIds: _*)
+    val hostToParts = if (allHosts.length == 1) {
+      Map(allHosts(0) -> Array(needHandlePartIds: _*))
     } else {
-      for (partId <- needHandlePartIds) {
-        // TODO-lzp: 这里有没有可能为空
-        val dataDist = dataDistState(partId)
-        val timeToCluster: Array[(Double, String)] = allHosts.map { runHost =>
-          // 这里直接忽略了, 数据在集群本地的情况, 只考虑从别的集群拉数据
-          val costT = allHosts.withFilter(_ != runHost).map { othHost =>
-            val aIdx = bwDistState.idxMap(runHost)
-            val bIdx = bwDistState.idxMap(othHost)
-            val costTLatency = bwDistState.latencies(aIdx)(bIdx)
-            val dataSize = dataDist.getOrElse[Long](othHost, 0)
-            val costTTrans = dataSize * 1000 / bwDistState.bws(aIdx)(bIdx).toDouble
-            // TODO-lzp: 未考虑计算时间
-            costTLatency + costTTrans
-          }
-          (costT.max, runHost)
-        }
-        // TODO-lzp: 如何时间都相差不大, 这时候简单的取min似乎意义不大
-        val bestHost = timeToCluster.minBy(_._1)._2
-        if (!hostToParts.contains(bestHost)) hostToParts(bestHost) = ArrayBuffer.empty
-        hostToParts(bestHost) += partId
+      val buckets = bwDistState.hostToHostMap.map { case (h, bw) =>
+        (h, TasksSiteBucket(h, bw))
+      }.toMap
+
+      needHandlePartIds.foreach { partId =>
+        val bestHost = buckets.map { case (h, b) =>
+          (h, b.calcCost(dataDistState(partId)))
+        }.minBy(_._2._1)._1
+        buckets(bestHost).addTask(partId, dataDistState(partId))
       }
+
+      buckets.map { case (h, b) => (h, b.partIds)}
     }
     stageIdToIdxWithParts(stage.id) = Array.ofDim(hostToParts.size)
 
@@ -1101,9 +1091,9 @@ class DAGScheduler(
     logInfo(s"""##lizp##: build stage description: $log""")
 
     val desc = hostToParts.zipWithIndex.map { case ((host, parts), idx) =>
-      stageIdToIdxWithParts(stage.id)(idx) = parts.toArray
+      stageIdToIdxWithParts(stage.id)(idx) = parts
       val serializedStage = Stage.serializeWithDependencies(
-        stage, jobId, parts.toArray, properties,
+        stage, jobId, parts, properties,
         sc.addedFiles, sc.addedJars, closureSerializer)
       new StageDescription(stage.id, hostnameToSDriverId(host), idx, serializedStage)
     }.toSeq
@@ -1457,4 +1447,45 @@ private[spark] object DAGScheduler {
   // this is a simplistic way to avoid resubmitting tasks in the non-fetchable map stage one by one
   // as more failure events come in
   val RESUBMIT_TIMEOUT = 200
+}
+
+private case class TasksSiteBucket(host: String, bws: Map[String, (Long, Int)]) {
+  // 当前桶内所有task产生的从其余集群拉取的数据大小
+  private val accumulateDataSize: MMap[String, Long] = MMap.empty  // othHost -> dataSize
+  bws.foreach { case (h, _) => accumulateDataSize(h) = 0 }
+
+  // 当前桶内所有task的partIds
+  private var taskPartIds = ArrayBuffer.empty[Int]
+  private var totalFetchData: Long = _  // 总的需要从其余集群拉取的数据
+  private var totalLocalData: Long = _  // 总的在本地集群上的数据
+
+  // 计算将一个task添加到桶中后，桶当前的成本，分别为时间成本，数据成本，综合成本
+  // 注意：dataAdd中包含在本集群中的数据，即key可能为host
+  def calcCost(dataAdd: Map[String, Long]): (Double, Long, Double) = {
+    val cost = accumulateDataSize.map { case (h, v) =>
+      val d = v + dataAdd.getOrElse[Long](h, 0)
+      val t = d.toDouble * 1000 / bws(h)._1 + bws(h)._2  // 数据B, 带宽B/s, 延迟ms
+      (d, t)
+    }
+    val (dataCost, timeCost) = cost.unzip
+    // 考虑到数据是同时从其余集群拉取的，因此时间成本取最值，数据成本则取和
+    (timeCost.max, dataCost.sum, 0)  // TODO-lzp: 不知道如何综合考虑, 因为不知道基于什么归一化
+  }
+
+  // 将一个task添加到桶内
+  def addTask(partId: Int, data: Map[String, Long]): Unit = {
+    taskPartIds += partId
+    data.foreach { case (h, v) =>
+      if (h == host) {  // 在本地集群上
+        totalLocalData += v
+      } else {  // 在别的集群上
+        totalFetchData += v
+        accumulateDataSize(h) = accumulateDataSize.getOrElse[Long](h, 0) + v
+      }
+    }
+  }
+
+  def totalData: Long = totalFetchData + totalLocalData
+
+  def partIds: Array[Int] = taskPartIds.toArray
 }

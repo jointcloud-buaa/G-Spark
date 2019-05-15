@@ -23,6 +23,13 @@ case class NetworkDistState(
   bws: Array[Array[Long]],  // Bps, 字节每秒
   latencies: Array[Array[Int]]  // ms, 毫秒
 ) {
+  // 主机到主机的带宽
+  def hostToHostMap: Map[String, Map[String, (Long, Int)]] = idxMap.map { case (h1, idx1) =>
+    (h1, idxMap.filterKeys(_ != h1).map { case (h2, idx2) =>
+        (h2, (bws(idx1)(idx2), latencies(idx1)(idx2)))
+      }.toMap)
+  }.toMap
+
   override def toString: String =
     s"""NetworkDistState:
        |  idxMap: $idxMap,
