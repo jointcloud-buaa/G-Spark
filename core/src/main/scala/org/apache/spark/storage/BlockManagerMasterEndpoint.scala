@@ -170,7 +170,7 @@ class BlockManagerMasterEndpoint(
       blockManagerInfo.values.map { bm =>
         // masterEndpoint返回的类型是Seq[(Option[Int], Int)]，此处将其相加
         val m = bm.masterEndpoint.map(
-          _.ask[Seq[(Option[Int], Int)]](removeMsg).map(
+          _.askWithRetry[Future[Seq[(Option[Int], Int)]]](removeMsg).map(
             _.map{case (v1, v2) => v1.getOrElse(0) + v2}.sum
           )
         )
@@ -191,7 +191,7 @@ class BlockManagerMasterEndpoint(
     Future.sequence(
       blockManagerInfo.values.map { bm =>
         val m = bm.masterEndpoint.map(
-          _.ask[Seq[(Option[Boolean], Boolean)]](removeMsg).map(
+          _.askWithRetry[Future[Seq[(Option[Boolean], Boolean)]]](removeMsg).map(
             // v1为从每个节点的masterEndpoint获取的值，其为None表示没有master，则默认为true
             _.map{case (v1, v2) => v1.getOrElse(true) && v2}.forall(b => b)
           )
@@ -228,7 +228,7 @@ class BlockManagerMasterEndpoint(
         // TODO-lzp: 此处指定传播指定层级
         if (level == 0) {
           val m = bm.masterEndpoint.map(
-            _.ask[Seq[(Option[Int], Int)]](removeMsg).map(
+            _.askWithRetry[Future[Seq[(Option[Int], Int)]]](removeMsg).map(
               _.map{case (v1, v2) => v1.getOrElse(0) + v2}.sum
             )
           )

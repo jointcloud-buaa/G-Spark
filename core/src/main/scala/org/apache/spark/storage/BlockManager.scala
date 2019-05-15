@@ -440,7 +440,9 @@ private[spark] class BlockManager(
             m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
           }
         } else {
+          logInfo(s"##lizp##: update local block $blockId info about $id")
           m.updateLocalBlockInfo(id, blockId, level, inMemSize, onDiskSize)
+          logInfo(s"##lizp##: update remote block $blockId info about $id")
           m.updateBlockInfo(id, blockId, level, inMemSize, onDiskSize)
         }
       case gm: BMMMasterRole =>
@@ -628,7 +630,7 @@ private[spark] class BlockManager(
    * multiple block managers can share the same host.
    */
   private def getLocations(blockId: BlockId): Seq[BlockManagerId] = {
-    val locations = BlockManager.getOneBlockLocationsInternal(master, blockId)
+    val locations = BlockManager.getOneBlockLocationsInternal(master, blockId, compLevel)
     val locs = Random.shuffle(locations)
     val (preferredLocs, otherLocs) = locs.partition { loc => blockManagerId.host == loc.host }
     preferredLocs ++ otherLocs
@@ -1515,15 +1517,22 @@ private[spark] object BlockManager extends Logging {
   }
 
   def getOneBlockLocationsInternal(
-    bmm: BlockManagerMaster, blockId: BlockId): Seq[BlockManagerId] = {
+    bmm: BlockManagerMaster, blockId: BlockId, compLevel: Int): Seq[BlockManagerId] = {
     bmm match {
       case m: BMMMiddleRole =>
-        logInfo(s"""##lizp##: get locations for $blockId in middle role""")
-        val seq1 = m.getLocations(blockId)
-        logInfo(s"""|from remote locations: ${seq1.mkString(",")}""")
-        val seq2 = m.getLocalLocations(blockId)
-        logInfo(s"""|from local locations: ${seq2.mkString(",")}""")
-        (seq1 ++ seq2).distinct
+        blockId match {
+          case b: TaskResultBlockId =>  // ResultBlock单独处理
+            m.getLocalLocations(b)
+          case b: BroadcastBlockId =>
+              m.getLocations(blockId)
+          case _ =>
+            logInfo(s"""##lizp##: get locations for $blockId in middle role""")
+            val seq1 = m.getLocations(blockId)
+            logInfo(s"""|from remote locations: ${seq1.mkString(",")}""")
+            val seq2 = m.getLocalLocations(blockId)
+            logInfo(s"""|from local locations: ${seq2.mkString(",")}""")
+            (seq1 ++ seq2).distinct
+        }
       case gm: BMMMasterRole =>
         logInfo(s"""##lizp##: get locations for $blockId in master role""")
         val seq = gm.getLocalLocations(blockId)
