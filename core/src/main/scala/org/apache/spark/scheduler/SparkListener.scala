@@ -26,7 +26,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 
 import org.apache.spark.{SparkConf, TaskEndReason}
 import org.apache.spark.annotation.DeveloperApi
-import org.apache.spark.executor.TaskMetrics
+import org.apache.spark.executor.{ShuffleReadMetrics, ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.scheduler.cluster.SiteDriverInfo
 import org.apache.spark.siteDriver.ExecutorInfo
 import org.apache.spark.storage.{BlockManagerId, BlockUpdatedInfo}
@@ -40,11 +40,37 @@ trait SparkListenerEvent {
 }
 
 @DeveloperApi
-case class SparkListenerStageSubmitted(stageInfo: StageInfo, properties: Properties = null)
+case class SparkListenerStageSubmitted(subStageNum: Int,
+  stageInfo: StageInfo, properties: Properties = null) extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerTaskScheCompleted(jobId: Int, stageId: Int, spent: Long)
+  extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerSubStageSubmitted(
+  stageInfo: StageInfo, properties: Properties = null, taskNum: Int, stageIdx: Int)
   extends SparkListenerEvent
 
 @DeveloperApi
 case class SparkListenerStageCompleted(stageInfo: StageInfo) extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerSubStageCompleted(stageInfo: StageInfo) extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerSubStageDataReport(data: SubStageReportData)
+  extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerRemoteShuffleFetchCompleted(
+  stageId: Int,
+  stageAttemptId: Int,
+  hostPort: String,
+  rmtReadMetrics: ShuffleReadMetrics,
+  rmtWriteMetrics: ShuffleWriteMetrics,
+  waitTime: Long
+) extends SparkListenerEvent
 
 @DeveloperApi
 case class SparkListenerTaskStart(stageId: Int, stageAttemptId: Int, taskInfo: TaskInfo)
@@ -151,6 +177,18 @@ case class SparkListenerApplicationStart(
 @DeveloperApi
 case class SparkListenerApplicationEnd(time: Long) extends SparkListenerEvent
 
+@DeveloperApi
+case class SparkListenerSiteAppStart(
+  siteAppId: String,
+  startTime: Long,
+  sparkUser: String,
+  siteAppAttemptId: Option[String],
+  sdriverLogs: Option[Map[String, String]] = None
+) extends SparkListenerEvent
+
+@DeveloperApi
+case class SparkListenerSiteAppEnd(time: Long) extends SparkListenerEvent
+
 /**
  * An internal class that describes the metadata of an event log.
  * This event is not meant to be posted to listeners downstream.
@@ -182,10 +220,19 @@ private[spark] trait SparkListenerInterface {
    */
   def onStageCompleted(stageCompleted: SparkListenerStageCompleted): Unit
 
+  def onSubStageCompleted(subStageCompleted: SparkListenerSubStageCompleted): Unit
+
   /**
    * Called when a stage is submitted
    */
   def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit
+
+  def onSubStageSubmitted(subStageSubmitted: SparkListenerSubStageSubmitted): Unit
+
+  def onSubStageDataReport(subStageDataReport: SparkListenerSubStageDataReport): Unit
+
+  def onRemoteShuffleFetchCompleted(
+    rmtShuffleCompleted: SparkListenerRemoteShuffleFetchCompleted): Unit
 
   /**
    * Called when a task starts
@@ -243,6 +290,9 @@ private[spark] trait SparkListenerInterface {
    */
   def onApplicationEnd(applicationEnd: SparkListenerApplicationEnd): Unit
 
+  def onSiteAppStart(siteAppStart: SparkListenerSiteAppStart): Unit
+
+  def onSiteAppEnd(siteAppEnd: SparkListenerSiteAppEnd): Unit
   /**
    * Called when the driver receives task metrics from an executor in a heartbeat.
    */
@@ -281,7 +331,16 @@ private[spark] trait SparkListenerInterface {
 abstract class SparkListener extends SparkListenerInterface {
   override def onStageCompleted(stageCompleted: SparkListenerStageCompleted): Unit = { }
 
+  override def onSubStageCompleted(subStageCompleted: SparkListenerSubStageCompleted): Unit = {}
+
   override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = { }
+
+  override def onSubStageSubmitted(subStageSubmitted: SparkListenerSubStageSubmitted): Unit = {}
+
+  override def onSubStageDataReport(subStageDataReport: SparkListenerSubStageDataReport): Unit = {}
+
+  override def onRemoteShuffleFetchCompleted(
+    rmtShuffleCompleted: SparkListenerRemoteShuffleFetchCompleted): Unit = {}
 
   override def onTaskStart(taskStart: SparkListenerTaskStart): Unit = { }
 
@@ -305,6 +364,10 @@ abstract class SparkListener extends SparkListenerInterface {
   override def onApplicationStart(applicationStart: SparkListenerApplicationStart): Unit = { }
 
   override def onApplicationEnd(applicationEnd: SparkListenerApplicationEnd): Unit = { }
+
+  override def onSiteAppStart(siteAppStart: SparkListenerSiteAppStart): Unit = { }
+
+  override def onSiteAppEnd(siteAppEnd: SparkListenerSiteAppEnd): Unit = { }
 
   override def onExecutorMetricsUpdate(
       executorMetricsUpdate: SparkListenerExecutorMetricsUpdate): Unit = { }

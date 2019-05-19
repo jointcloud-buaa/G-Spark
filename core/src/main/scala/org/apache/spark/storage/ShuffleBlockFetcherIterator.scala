@@ -151,10 +151,18 @@ final class ShuffleBlockFetcherIterator(
     while (iter.hasNext) {
       val result = iter.next()
       result match {
-        case SuccessFetchResult(_, address, _, buf, _) =>
+        case SuccessFetchResult(blockId, address, _, buf, _) =>
           if (address != blockManager.blockManagerId) {
-            shuffleMetrics.incRemoteBytesRead(buf.size)
-            shuffleMetrics.incRemoteBlocksFetched(1)
+            blockId match {
+              case _: HostAwareShuffleBlockId =>
+                shuffleMetrics.incRemoteClusterBlocksFetched(1)
+                shuffleMetrics.incRemoteClusterBytesFetched(buf.size())
+              case _: ShuffleBlockId =>
+                shuffleMetrics.incRemoteBytesRead(buf.size)
+                shuffleMetrics.incRemoteBlocksFetched(1)
+              case _ =>
+                logError(s"##lizp##: the blockId's type is wrong!! ${blockId.getClass.getName}")
+            }
           }
           buf.release()
         case _ =>
@@ -164,8 +172,6 @@ final class ShuffleBlockFetcherIterator(
 
   private[this] def sendRequest(req: FetchRequest) {
     logDebug("Sending request for %d blocks (%s) from %s".format(
-      req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
-    logInfo("Sending request for %d blocks (%s) from %s".format(
       req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
     bytesInFlight += req.size
     reqsInFlight += 1
@@ -343,20 +349,8 @@ final class ShuffleBlockFetcherIterator(
 
     // 查看是否所有的远程块都已经拉取成功
     if (extraFetch.isDefined && nonFinishedExtraBlocks.get() > 0) {
-      logInfo(s"##lizp##: in next for ${context.partitionId()} with name " +
-        Thread.currentThread().getName)
       if (numBlocksProcessed < allSendBlockNum) {  // 未处理完所有已发送的块
         val (rid, extraBmId, extraBlocks, nonFinished) = extraFetch.get(requestId.get())
-
-        logInfo(s"##lizp##: requestId: $rid, blockManagerId: $extraBmId, " +
-          s"nonFinished: $nonFinished")
-        logInfo(s"""##lizp##: extraBlocks is ${extraBlocks.mkString(",")}""")
-
-        assert(requestId.get() == rid, s"wrong requestId, " +
-          s"return $rid, actual need ${requestId.get}")
-        assert(extraBlocks.length == nonFinishedExtraBlocks.get - nonFinished,
-          s"wrong blockIds size, actual ${extraBlocks.length}, " +
-            s"need ${nonFinishedExtraBlocks.get - nonFinished}")
         if (extraBlocks.nonEmpty) {
           // 会在内部更新numBlocksToFetch
           val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
@@ -364,34 +358,29 @@ final class ShuffleBlockFetcherIterator(
           nonFinishedExtraBlocks.set(nonFinished)
         }
       } else {  // 已经处理完所有已发送的块
+        val loopWaitStart = System.currentTimeMillis()
         var rst = extraFetch.get(requestId.get())
         var rid = rst._1
         var extraBmId = rst._2
         var extraBlocks = rst._3
         var nonFinished = rst._4
+        var initInterval = 100
         while (extraBlocks.isEmpty) {
-          logInfo(s"##lizp##: requestId: $rid, blockManagerId: $extraBmId, " +
-            s"nonFinished: $nonFinished")
-          logInfo(s"""##lizp##: extraBlocks is ${extraBlocks.mkString(",")}""")
-
-          assert(requestId.get() == rid, s"wrong requestId, " +
-            s"return $rid, actual need ${requestId.get}")
-          assert(extraBlocks.length == nonFinishedExtraBlocks.get - nonFinished,
-            s"wrong blockIds size, actual ${extraBlocks.length}, " +
-              s"need ${nonFinishedExtraBlocks.get - nonFinished}")
-
-          Thread.sleep(100)  // 休息一下  TODO-lzp: 改成异步
-
-          var rst = extraFetch.get(requestId.get())
+          Thread.sleep(initInterval)  // 休息一下  TODO-lzp: 改成异步
+          rst = extraFetch.get(requestId.get())
           rid = rst._1
           extraBmId = rst._2
           extraBlocks = rst._3
           nonFinished = rst._4
+          // 一分钟以内，则每次等待时间加200ms，
+          // TODO-lzp: 在集群非常大时，此处应使用较严格的退避算法, 避免对SiteDriver造成严重的负担
+          if (initInterval < 1000) initInterval += 200
         }
         // 会在内部更新numBlocksToFetch
         val extraRemoteRequests = buildRemoteBlocks(extraBmId, extraBlocks)
         fetchRequests ++= Utils.randomize(extraRemoteRequests)
         nonFinishedExtraBlocks.set(nonFinished)
+        shuffleMetrics.incLoopWaitBlockTime(System.currentTimeMillis() - loopWaitStart)
       }
     }
 
@@ -403,10 +392,18 @@ final class ShuffleBlockFetcherIterator(
     shuffleMetrics.incFetchWaitTime(stopFetchWait - startFetchWait)
 
     result match {
-      case SuccessFetchResult(_, address, size, buf, isNetworkReqDone) =>
+      case SuccessFetchResult(blockId, address, size, buf, isNetworkReqDone) =>
         if (address != blockManager.blockManagerId) {
-          shuffleMetrics.incRemoteBytesRead(buf.size)
-          shuffleMetrics.incRemoteBlocksFetched(1)
+          blockId match {
+            case _: HostAwareShuffleBlockId =>
+              shuffleMetrics.incRemoteClusterBlocksFetched(1)
+              shuffleMetrics.incRemoteClusterBytesFetched(buf.size())
+            case _: ShuffleBlockId =>
+              shuffleMetrics.incRemoteBytesRead(buf.size)
+              shuffleMetrics.incRemoteBlocksFetched(1)
+            case _ =>
+              logError(s"##lizp##: the blockId's type is wrong!! ${blockId.getClass.getName}")
+          }
         }
         bytesInFlight -= size
         if (isNetworkReqDone) {

@@ -257,6 +257,10 @@ class DAGScheduler(
 
   def postStartHook(): Unit = waitBackendReady()
 
+  def postSubStageShortStatsData(statData: SubStageReportData): Unit = {
+    listenerBus.post(SparkListenerSubStageDataReport(statData))
+  }
+
   // 等待schedulerBackend准备好, 通常, 要么已经注册了足够的资源, 要么等待了足够的时间.
   // 这时, taskSchedulerImpl才能进行资源的调度
   private def waitBackendReady(): Unit = {
@@ -987,7 +991,6 @@ class DAGScheduler(
     stage.pendingPartitions.clear()
     val properties = jobIdToActiveJob(jobId).properties
     runningStages += stage
-    listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 
     val partitionsToCompute: Seq[Int] = stage match {
       case sms: ShuffleMapStage =>
@@ -1023,7 +1026,7 @@ class DAGScheduler(
     } catch {
       case NonFatal(e) =>
         stage.makeNewStageAttempt(sc, partitionsToCompute.size)
-        listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+        listenerBus.post(SparkListenerStageSubmitted(0, stage.latestInfo, properties))
         abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
         return
@@ -1036,6 +1039,9 @@ class DAGScheduler(
 
     val stageDesc = buildStageDescription(jobId, stage, partitionsToCompute,
       taskIdToDataDist, bwDist, properties)
+    stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
+
+    listenerBus.post(SparkListenerStageSubmitted(stageDesc.length, stage.latestInfo))
     backend.launchStages(stageDesc)
   }
 
@@ -1055,14 +1061,10 @@ class DAGScheduler(
         partitionsToCompute.map(r.partitions)
     }
 
-    logInfo(
-      s"""##lizp##:
-         |$dataDistState
-         |$bwDistState""".stripMargin)
-
     // TODO-lzp: 如何没有启动SiteDriver呢？？
     val allHosts = clusterToHost.values.toArray
 
+    val taskScheStart = System.currentTimeMillis()
     val hostToParts = if (allHosts.length == 1) {
       Map(allHosts(0) -> Array(needHandlePartIds: _*))
     } else {
@@ -1077,8 +1079,14 @@ class DAGScheduler(
         buckets(bestHost).addTask(partId, dataDistState(partId))
       }
 
-      buckets.map { case (h, b) => (h, b.partIds)}
+      buckets.map { case (h, b) =>
+        logInfo(s"subStage build result($h): " +
+          s"${b.totalRemoteData}|${b.totalLocalData}|${b.totalData}|${b.partIds.length}")
+        (h, b.partIds)
+      }
     }
+    val taskScheSpent = System.currentTimeMillis() - taskScheStart
+    listenerBus.post(SparkListenerTaskScheCompleted(jobId, stage.id, taskScheSpent))
     stageIdToIdxWithParts(stage.id) = Array.ofDim(hostToParts.size)
 
     stage match {
@@ -1086,9 +1094,6 @@ class DAGScheduler(
         sms.initOutputLocs(hostToParts.size)
       case _ =>
     }
-
-    val log = hostToParts.map{case (host, parts) => s"""$host: ${parts.mkString(",")}"""}
-    logInfo(s"""##lizp##: build stage description: $log""")
 
     val desc = hostToParts.zipWithIndex.map { case ((host, parts), idx) =>
       stageIdToIdxWithParts(stage.id)(idx) = parts
@@ -1102,12 +1107,13 @@ class DAGScheduler(
 
   // TODO-lzp: 从GM处获取带宽测量数据
   def getBandwitchDist(): NetworkDistState = {
-//    val tmp = Array("act-37-41")
-    val tmp = Array("act-33-36", "act-37-41", "act-42-46")
-    NetworkDistState.const(
-      tmp.zipWithIndex.map{ case (cluster, idx) => (clusterToHost(cluster), idx)}.toMap,
-      1000,
-      0
+    def mbToB(n: Long): Long = n * 1024 * 1024
+    val idxMap = Array("act-33-36", "act-37-41", "act-42-46")
+      .zipWithIndex.map { case (c, idx) => (clusterToHost(c), idx) }.toMap
+    NetworkDistState.mockWlan(
+      idxMap,
+      Array(mbToB(40), mbToB(20), mbToB(60)),
+      Array(1, 1, 1)
     )
   }
 
@@ -1449,15 +1455,17 @@ private[spark] object DAGScheduler {
   val RESUBMIT_TIMEOUT = 200
 }
 
-private case class TasksSiteBucket(host: String, bws: Map[String, (Long, Int)]) {
+// 任务在host执行，意味着与任务相关的数据将从其余集群拉取到host，带宽应该取min(oth_up, host_down)，
+// 即其他集群的上传带宽和host的下载带宽的小值。如果将host_down设置为无限大，则oth_up为真正的带宽
+private case class TasksSiteBucket(host: String, bws: Map[String, (Long, Double)]) {
   // 当前桶内所有task产生的从其余集群拉取的数据大小
   private val accumulateDataSize: MMap[String, Long] = MMap.empty  // othHost -> dataSize
   bws.foreach { case (h, _) => accumulateDataSize(h) = 0 }
 
   // 当前桶内所有task的partIds
   private var taskPartIds = ArrayBuffer.empty[Int]
-  private var totalFetchData: Long = _  // 总的需要从其余集群拉取的数据
-  private var totalLocalData: Long = _  // 总的在本地集群上的数据
+  private var _totalFetchData: Long = _  // 总的需要从其余集群拉取的数据
+  private var _totalLocalData: Long = _  // 总的在本地集群上的数据
 
   // 计算将一个task添加到桶中后，桶当前的成本，分别为时间成本，数据成本，综合成本
   // 注意：dataAdd中包含在本集群中的数据，即key可能为host
@@ -1477,15 +1485,17 @@ private case class TasksSiteBucket(host: String, bws: Map[String, (Long, Int)]) 
     taskPartIds += partId
     data.foreach { case (h, v) =>
       if (h == host) {  // 在本地集群上
-        totalLocalData += v
+        _totalLocalData += v
       } else {  // 在别的集群上
-        totalFetchData += v
+        _totalFetchData += v
         accumulateDataSize(h) = accumulateDataSize.getOrElse[Long](h, 0) + v
       }
     }
   }
 
-  def totalData: Long = totalFetchData + totalLocalData
+  def totalRemoteData: Long = _totalFetchData
+  def totalLocalData: Long = _totalLocalData
+  def totalData: Long = _totalFetchData + _totalLocalData
 
   def partIds: Array[Int] = taskPartIds.toArray
 }

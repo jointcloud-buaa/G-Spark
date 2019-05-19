@@ -416,6 +416,12 @@ class CoarseGrainedSchedulerBackend(
     ))
   }
 
+  override def reportSubStageStats(data: ByteBuffer): Unit = {
+    gdriverEndpoint.foreach(_.send(
+      SubStageDataReport(siteDriverId, new SerializableBuffer(data))
+    ))
+  }
+
   protected def createDriverEndpointRef(
     properties: ArrayBuffer[(String, String)]): RpcEndpointRef = {
     rpcEnv.setupEndpoint(ENDPOINT_NAME, createDriverEndpoint(properties))

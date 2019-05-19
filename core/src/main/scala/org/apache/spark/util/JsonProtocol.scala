@@ -51,6 +51,7 @@ import org.apache.spark.storage._
  *  - Any new JSON fields should be optional; use `Utils.jsonOption` when reading these fields
  *    in `*FromJson` methods.
  */
+// TODO-lzp: 这里针对新添加的Event还有很多没在此添加序列化和反序列化
 private[spark] object JsonProtocol {
   // TODO: Remove this file and put JSON serialization into each individual class.
 
@@ -105,9 +106,11 @@ private[spark] object JsonProtocol {
   }
 
   def stageSubmittedToJson(stageSubmitted: SparkListenerStageSubmitted): JValue = {
+    val n = stageSubmitted.subStageNum
     val stageInfo = stageInfoToJson(stageSubmitted.stageInfo)
     val properties = propertiesToJson(stageSubmitted.properties)
     ("Event" -> Utils.getFormattedClassName(stageSubmitted)) ~
+    ("SubStage Num" -> n) ~
     ("Stage Info" -> stageInfo) ~
     ("Properties" -> properties)
   }
@@ -535,9 +538,10 @@ private[spark] object JsonProtocol {
   }
 
   def stageSubmittedFromJson(json: JValue): SparkListenerStageSubmitted = {
+    val n = (json \ "SubStage Num").extract[Int]
     val stageInfo = stageInfoFromJson(json \ "Stage Info")
     val properties = propertiesFromJson(json \ "Properties")
-    SparkListenerStageSubmitted(stageInfo, properties)
+    SparkListenerStageSubmitted(n, stageInfo, properties)
   }
 
   def stageCompletedFromJson(json: JValue): SparkListenerStageCompleted = {

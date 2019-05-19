@@ -38,7 +38,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
-import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, FakeStage, FakeTask, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SimpleMapStatus, SingleMapStatus, SparkListenerExecutorMetricsUpdate, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
+import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, FakeStage, FakeTask, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SimpleMapStatus, SingleMapStatus, SparkListenerExecutorMetricsUpdate, SparkListenerRemoteShuffleFetchCompleted, SparkListenerSubStageCompleted, SparkListenerSubStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerSiteHeartbeat
@@ -282,6 +282,7 @@ class StageScheduler(
     // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
     bmIdToBlockIds.foreach { case (bmId, blocks) =>
       if (blocks.nonEmpty) {
+        val startFetchTime = System.currentTimeMillis()
         // 异步拉取，考虑到在方法内部使用了FetcherIterator, 其在迭代时会阻塞
         val f = Future {
           SiteShuffleBlockFetcherUtils.fetchRemoteShuffleBlocks(
@@ -292,24 +293,12 @@ class StageScheduler(
         }(remoteShuffleExecutor)
         f.onComplete{
           case scala.util.Success((sread, swrite)) =>
-            // TODO-lzp: 感觉这些其实可以汇报给GlobalDriver的， 参与Executor的心跳
-            logInfo(s"fetch successed! from $bmId with ${blocks.size} blocks")
-            logInfo(
-              s"""##lizp##: metrics is
-                 |shuffleRead
-                 |  fetchWaitTime: ${sread.fetchWaitTime}
-                 |  recordsRead: ${sread.recordsRead}
-                 |  remoteBlocksFetched: ${sread.remoteBlocksFetched}
-                 |  remoteByteRead: ${sread.remoteBytesRead}
-                 |  localBlocksFetched: ${sread.localBlocksFetched}
-                 |  localByteRead: ${sread.localBytesRead}
-                 |shuffleWrite
-                 |  writeTime: ${swrite.writeTime}
-                 |  recordsWritten: ${swrite.recordsWritten}
-                 |  bytesWritten: ${swrite.bytesWritten}
-               """.stripMargin)
+            // 从开始远程拉取到全部写入本地的总时间
+            val fetchTime = System.currentTimeMillis() - startFetchTime
+            listenerBus.post(SparkListenerRemoteShuffleFetchCompleted(
+              stage.id, stage.latestInfo.attemptId, bmId.hostPort, sread, swrite, fetchTime))
           case scala.util.Failure(e) =>
-            logInfo(s"fetch failed! from $bmId with ${blocks.size} blocks")
+            logError(s"fetch failed! from $bmId with ${blocks.size} blocks")
         }(remoteShuffleExecutor)
       }
     }
@@ -496,14 +485,17 @@ class StageScheduler(
     } catch {
       case NonFatal(e) =>
         stage.makeNewStageAttempt(ssc, partitionsToCompute.size)
-        listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+        listenerBus.post(SparkListenerSubStageSubmitted(
+          stage.latestInfo, properties, partitionsToCompute.length, stageIdToIdx(stage.id)))
         abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
         return
     }
 
     stage.makeNewStageAttempt(ssc, partitionsToCompute.size, taskIdToLocations.values.toSeq)
-    listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+    listenerBus.post(SparkListenerSubStageSubmitted(
+      stage.latestInfo, properties, partitionsToCompute.length, stageIdToIdx(stage.id))
+    )
 
     // TODO: Maybe we can keep the taskBinary in Stage to avoid serializing it multiple times.
     // Broadcasted binary for the task, used to dispatch tasks to executors. Note that we broadcast
@@ -1052,7 +1044,7 @@ class StageScheduler(
     if (!willRetry) {
       outputCommitCoordinator.stageEnd(stage.id)
     }
-    listenerBus.post(SparkListenerStageCompleted(stage.latestInfo))
+    listenerBus.post(SparkListenerSubStageCompleted(stage.latestInfo))
     runningStages -= stage
   }
 

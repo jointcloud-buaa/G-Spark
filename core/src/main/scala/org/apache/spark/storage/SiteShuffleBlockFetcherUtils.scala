@@ -52,7 +52,6 @@ object SiteShuffleBlockFetcherUtils extends Logging {
       )
       val readMetrics = context.taskMetrics().createTempShuffleReadMetrics()
       blockFetcherItr.foreach { case (blockId, inputStream) =>
-        logInfo(s"##lizp##: handle $blockId from ${blocksByAddress._1}")
         val newBlockId = blockId.asInstanceOf[RemoteShuffleBlockId]
         val wrappedStreams = serializerManager.wrapStream(blockId, inputStream)
         val recordIter = shuffleIdToSerInstances(newBlockId.shuffleId)

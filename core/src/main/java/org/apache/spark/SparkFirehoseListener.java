@@ -17,6 +17,7 @@
 
 package org.apache.spark;
 
+import org.apache.spark.annotation.DeveloperApi;
 import org.apache.spark.scheduler.*;
 
 /**
@@ -38,8 +39,28 @@ public class SparkFirehoseListener implements SparkListenerInterface {
     }
 
     @Override
+    public final void onSubStageCompleted(SparkListenerSubStageCompleted subStageCompleted) {
+        onEvent(subStageCompleted);
+    }
+
+    @Override
+    public final void onSubStageDataReport(SparkListenerSubStageDataReport dataReport) {
+        onEvent(dataReport);
+    }
+
+    @Override
     public final void onStageSubmitted(SparkListenerStageSubmitted stageSubmitted) {
         onEvent(stageSubmitted);
+    }
+
+    @Override
+    public final void onSubStageSubmitted(SparkListenerSubStageSubmitted subStageSubmitted) {
+        onEvent(subStageSubmitted);
+    }
+
+    @Override
+    public final void onRemoteShuffleFetchCompleted(SparkListenerRemoteShuffleFetchCompleted completed) {
+        onEvent(completed);
     }
 
     @Override
@@ -96,6 +117,12 @@ public class SparkFirehoseListener implements SparkListenerInterface {
     public final void onApplicationEnd(SparkListenerApplicationEnd applicationEnd) {
         onEvent(applicationEnd);
     }
+
+    @DeveloperApi
+    public final void onSiteAppStart(SparkListenerSiteAppStart siteAppStart) { onEvent(siteAppStart); }
+
+    @DeveloperApi
+    public final void onSiteAppEnd(SparkListenerSiteAppEnd siteAppEnd) { onEvent(siteAppEnd); }
 
     @Override
     public final void onExecutorMetricsUpdate(

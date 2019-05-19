@@ -37,7 +37,9 @@ class StageInfo(
     val parentIds: Seq[Int],
     val details: String,
     val taskMetrics: TaskMetrics = null,
-    private[spark] val taskLocalityPreferences: Seq[Seq[TaskLocation]] = Seq.empty) {
+    private[spark] val taskLocalityPreferences: Seq[Seq[TaskLocation]] = Seq.empty,
+  val isFake: Boolean = false
+) {
   /** When this stage was submitted from the DAGScheduler to a TaskScheduler. */
   var submissionTime: Option[Long] = None
   /** Time when all tasks in the stage completed or when the stage was cancelled. */
@@ -95,6 +97,8 @@ private[spark] object StageInfo {
       Seq.empty[Int], // stage.parents.map(_.id),  // 没有parents， 其没有被序列化
       stage.details,
       taskMetrics,
-      taskLocalityPreferences)
+      taskLocalityPreferences,
+      stage.isInstanceOf[FakeStage]
+    )
   }
 }

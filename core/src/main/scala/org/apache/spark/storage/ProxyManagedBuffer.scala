@@ -31,7 +31,11 @@ class ProxyManagedBuffer(
   blockId: RemoteShuffleBlockId,
   blockManagerId: BlockManagerId,
   shuffleClient: ShuffleClient
-) extends ManagedBuffer {
+) extends ManagedBuffer with Logging {
+
+  private val startTime = System.currentTimeMillis()
+
+  private var fetchWaitTime: Long = _
 
   private val realBuf: Promise[ManagedBuffer] = Promise()
 
@@ -43,6 +47,8 @@ class ProxyManagedBuffer(
       override def onBlockFetchSuccess(blockId: String, data: ManagedBuffer): Unit = {
         data.retain()
         realBuf.success(data)
+        fetchWaitTime = System.currentTimeMillis() - startTime
+        logInfo(s"fetch local $blockId from ${blockManagerId.hostPort} spent $fetchWaitTime")
       }
       // TODO-lzp: 思考如何增加块获取失败后的重试，和异常处理
       override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {

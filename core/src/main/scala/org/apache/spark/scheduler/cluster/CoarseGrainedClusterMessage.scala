@@ -101,6 +101,9 @@ private[spark] object CoarseGrainedClusterMessages {
   case class SubStageFinished(sdriverId: String, data: SerializableBuffer)
     extends CoarseGrainedClusterMessage
 
+  case class SubStageDataReport(sdriverId: String, metricData: SerializableBuffer)
+    extends CoarseGrainedClusterMessage
+
   // TODO-lzp: 不是很明白为什么下面的消息放到另一个文件就不识别了
   // Driver to executors
   case class LaunchTask(data: SerializableBuffer)

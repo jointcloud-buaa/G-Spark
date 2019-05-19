@@ -352,7 +352,6 @@ object SparkEnv extends Logging {
 
     conf.set("spark.executor.id", execId)
     val metricsSystem = MetricsSystem.createMetricsSystem("siteDriver", conf, securityManager)
-    metricsSystem.start()
 
     val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
       new OutputCommitCoordinator(conf, true) }

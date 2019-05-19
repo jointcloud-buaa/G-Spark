@@ -20,10 +20,10 @@ import java.io.{File, FileNotFoundException}
 import java.lang.reflect.Constructor
 import java.net.{URI, URL}
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable.{HashMap, HashSet}
+import scala.collection.mutable.HashMap
 import scala.reflect.{classTag, ClassTag}
 import scala.util.control.NonFatal
 
@@ -37,9 +37,9 @@ import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
-import org.apache.spark.rpc.{RpcAddress, RpcEndpointAddress, RpcEndpointRef}
-import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus, SparkListenerInterface}
-import org.apache.spark.util.{AccumulatorV2, CollectionAccumulator, DoubleAccumulator, LongAccumulator, Utils}
+import org.apache.spark.rpc.{RpcEndpointAddress, RpcEndpointRef}
+import org.apache.spark.scheduler.{EventLoggingListener, LiveListenerBus, SiteAppStatisticsListener, SparkListenerInterface, SparkListenerSiteAppEnd, SparkListenerSiteAppStart}
+import org.apache.spark.util.{CollectionAccumulator, DoubleAccumulator, LongAccumulator, ShutdownHookManager, Utils}
 
 private[spark] class SiteContext(
   config: SparkConf, val ioEncryptionKey: Option[Array[Byte]], _userClassPath: Seq[URL]
@@ -50,6 +50,7 @@ private[spark] class SiteContext(
   private var _eventLogDir: Option[URI] = None
   private var _eventLogCodec: Option[String] = None
   private var _eventLogger: Option[EventLoggingListener] = None
+  private var _siteAppStatListener: Option[SiteAppStatisticsListener] = None
   private var _hadoopConfiguration: Configuration = _
   private var _taskScheduler: TaskScheduler = _
   private var _schedulerBackend: SiteSchedulerBackend = _
@@ -69,6 +70,8 @@ private[spark] class SiteContext(
   private var _gdriverUrl: String = _
   private var _siteMasterUrl: String = _
   private var _siteMasterName: String = _
+
+  private var _shutdownHookRef: AnyRef = _
 
   private var _executorMemory: Int = _
 
@@ -108,6 +111,8 @@ private[spark] class SiteContext(
 
   def userClassPath(): Seq[URL] = _userClassPath
 
+  val sparkUser = Utils.getCurrentUserName()
+
   /**
    * A default Hadoop Configuration for the Hadoop code (e.g. file systems) that we reuse.
    *
@@ -129,6 +134,8 @@ private[spark] class SiteContext(
   def cores: Int = _siteDriverCores
 
   private[spark] def isEventLogEnabled: Boolean = _conf.getBoolean("spark.eventLog.enabled", false)
+  private[spark] def isSiteAppStatEnabled: Boolean =
+    _conf.getBoolean("spark.siteAppStat.enabled", false)
   // TODO-lzp: 以下用在SiteAppDescription的构造上
   private[spark] def eventLogDir: Option[URI] = _eventLogDir
   private[spark] def eventLogCodec: Option[String] = _eventLogCodec
@@ -240,6 +247,13 @@ private[spark] class SiteContext(
         None
       }
 
+    _siteAppStatListener = if (isSiteAppStatEnabled) {
+      val statPath = _conf.get("spark.siteAppStat.path", ".")
+      val statListener = new SiteAppStatisticsListener(statPath, _siteAppId, _schedulerBackend)
+      listenerBus.addListener(statListener)
+      Some(statListener)
+    } else None
+
     env.blockManager.initialize(_siteAppId)
 //    env.blockManager.setStageScheduler(_stageScheduler)
 
@@ -255,15 +269,22 @@ private[spark] class SiteContext(
       }
     _cleaner.foreach(_.start())
 
-    //    env.metricsSystem.start()
+    env.metricsSystem.start()
     setupAndStartListenerBus()
+    postSiteAppStart()
 
     _taskScheduler.postStartHook() // 等待集群OK
     _env.metricsSystem.registerSource(_stageScheduler.metricsSource)
     _schedulerBackend.reportClusterReady()
 
     // TODO-lzp: 一些关于SiteDriver的清理
-
+    // 因为用户事实上没办法调用SiteContext的stop
+    logDebug("Adding shutdown hook") // force eager creation of logger
+    _shutdownHookRef = ShutdownHookManager.addShutdownHook(
+      ShutdownHookManager.SPARK_CONTEXT_SHUTDOWN_PRIORITY) { () =>
+      logInfo("Invoking stop() from shutdown hook")
+      stop()
+    }
   } catch {
     case NonFatal(e) =>
       logError("Error initializing SiteContext.", e)
@@ -568,18 +589,34 @@ private[spark] class SiteContext(
     _listenerBusStarted = true
   }
 
+  private def postSiteAppStart(): Unit = {
+    listenerBus.post(SparkListenerSiteAppStart(
+      siteAppId, startTime, sparkUser, siteAppAttemptId, schedulerBackend.getSiteDriverLogUrls
+    ))
+  }
+
+  private def postSiteAppEnd(): Unit = {
+    listenerBus.post(SparkListenerSiteAppEnd(System.currentTimeMillis()))
+  }
+
   // TODO-lzp: 目前只是比较粗
   override def stop(): Unit = {
+    if (LiveListenerBus.withinListenerThread.value) {
+      throw new SparkException(
+        s"Cannot stop SparkContext within listener thread of ${LiveListenerBus.name}")
+    }
     if (!stopped.compareAndSet(false, true)) {
       logInfo("SiteContext already stopped")
       return
     }
-
-    if (env != null && _heartbeatReceiver != null) {
-      Utils.tryLogNonFatalError {
-        env.rpcEnv.stop(_heartbeatReceiver)
-      }
+    if (_shutdownHookRef != null) {
+      ShutdownHookManager.removeShutdownHook(_shutdownHookRef)
     }
+
+    Utils.tryLogNonFatalError {
+      postSiteAppEnd()
+    }
+
     Utils.tryLogNonFatalError {
       _cleaner.foreach(_.stop())
     }
@@ -592,11 +629,26 @@ private[spark] class SiteContext(
     Utils.tryLogNonFatalError {
       _eventLogger.foreach(_.stop())
     }
+    Utils.tryLogNonFatalError {
+      _siteAppStatListener.foreach(_.stop())
+    }
     if (_stageScheduler != null) {
       Utils.tryLogNonFatalError {
         _stageScheduler.stop()
       }
       _stageScheduler = null
+    }
+    if (env != null && _heartbeatReceiver != null) {
+      Utils.tryLogNonFatalError {
+        env.rpcEnv.stop(_heartbeatReceiver)
+      }
+    }
+    _taskScheduler = null
+    if (_env != null) {
+      Utils.tryLogNonFatalError {
+        _env.stop()
+      }
+      SparkEnv.set(null)
     }
 
     logInfo("Successfully stopped SiteContext")

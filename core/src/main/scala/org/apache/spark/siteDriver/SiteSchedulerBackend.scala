@@ -40,4 +40,5 @@ private[spark] trait SiteSchedulerBackend {
 
   def reportStageFinished(data: ByteBuffer): Unit
 
+  def reportSubStageStats(data: ByteBuffer): Unit
 }
