@@ -154,7 +154,9 @@ final class ShuffleBlockFetcherIterator(
         case SuccessFetchResult(blockId, address, _, buf, _) =>
           if (address != blockManager.blockManagerId) {
             blockId match {
-              case _: HostAwareShuffleBlockId =>
+                // 在StageScheduler中使用时，为RemoteShuffleBlockId
+                // 在Task中使用时，为HostAwareShuffleBlockId
+              case _: HostAwareShuffleBlockId | _: RemoteShuffleBlockId =>
                 shuffleMetrics.incRemoteClusterBlocksFetched(1)
                 shuffleMetrics.incRemoteClusterBytesFetched(buf.size())
               case _: ShuffleBlockId =>
@@ -395,7 +397,7 @@ final class ShuffleBlockFetcherIterator(
       case SuccessFetchResult(blockId, address, size, buf, isNetworkReqDone) =>
         if (address != blockManager.blockManagerId) {
           blockId match {
-            case _: HostAwareShuffleBlockId =>
+            case _: HostAwareShuffleBlockId | _: RemoteShuffleBlockId =>
               shuffleMetrics.incRemoteClusterBlocksFetched(1)
               shuffleMetrics.incRemoteClusterBytesFetched(buf.size())
             case _: ShuffleBlockId =>

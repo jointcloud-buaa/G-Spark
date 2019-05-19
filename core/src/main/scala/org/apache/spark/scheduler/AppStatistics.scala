@@ -114,9 +114,10 @@ case class SubStageStats(
     )
   }
 
-  def remoteShuffleStats: RemoteShuffleStat = {
+  def remoteShuffleStats: Option[RemoteShuffleStat] = if (remoteShuffleMetrics.isEmpty) None
+  else {
     val (sreads, swrites, waitTimes) = remoteShuffleMetrics.values.toArray.unzip3
-    RemoteShuffleStat(
+    val stat = RemoteShuffleStat(
       sreads.map(_.remoteClusterBlocksFetched).sum,  // 拉取的集群外块的个数
       sreads.map(_.remoteClusterBytesFetched).sum,  // 拉取的集群外的字节数
       sreads.map(_.recordsRead).sum,  // 读入的集群外的记录总数
@@ -124,6 +125,7 @@ case class SubStageStats(
       swrites.map(_.recordsWritten).sum,  // 向SiteDriver写入的记录总数
       waitTimes.max  // 集群外拉取花费的最长时间
     )
+    Some(stat)
   }
 
   def writeToLocalFile(out: BufferedWriter): Unit = {
@@ -172,7 +174,7 @@ case class SubStageReportData(
   isFake: Boolean,
   taskNum: Int,
   taskMetrics: Array[(Long, Double, Double)],
-  rmtShuffle: RemoteShuffleStat
+  rmtShuffle: Option[RemoteShuffleStat]
 )
 
 case class RemoteShuffleStat(

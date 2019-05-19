@@ -64,7 +64,7 @@ private[spark] abstract class Task[T](
     val appId: Option[String] = None,
     val appAttemptId: Option[String] = None) extends Serializable {
 
-  def isFakeTask: Boolean
+  def isFakeTask: Boolean = false
 
   /**
    * Called by [[org.apache.spark.executor.Executor]] to run this task.

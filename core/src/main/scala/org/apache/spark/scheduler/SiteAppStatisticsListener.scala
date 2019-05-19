@@ -22,10 +22,12 @@ import java.nio.file.Paths
 import scala.collection.mutable.{ArrayBuffer, Map => MMap}
 
 import org.apache.spark.SparkException
+import org.apache.spark.internal.Logging
 import org.apache.spark.siteDriver.SiteSchedulerBackend
 
 class SiteAppStatisticsListener(
-  statPath: String, siteAppId: String, backend: SiteSchedulerBackend) extends SparkListener {
+  statPath: String, siteAppId: String, backend: SiteSchedulerBackend
+) extends SparkListener with Logging {
 
   var startTime: Long = _
   var endTime: Long = _
@@ -58,12 +60,13 @@ class SiteAppStatisticsListener(
       info.stageId, subStageSubmitted.stageIdx, info.attemptId,
       info.name, subStageSubmitted.taskNum
     )
-    subStageStats.startTime = info.submissionTime.get
     subStageStats.isFake = info.isFake
     if (info.isFake) {
-      sdriverFakeStageStats.getOrElseUpdate(info.stageId, ArrayBuffer.empty) += subStageStats
+      sdriverFakeStageStats(info.stageId) = sdriverFakeStageStats.getOrElse(
+        info.stageId, ArrayBuffer.empty) += subStageStats
     } else {
-      sdriverSubStageStats.getOrElseUpdate(info.stageId, ArrayBuffer.empty) += subStageStats
+      sdriverSubStageStats(info.stageId) = sdriverSubStageStats.getOrElse(
+        info.stageId, ArrayBuffer.empty) += subStageStats
     }
   }
 
@@ -74,6 +77,8 @@ class SiteAppStatisticsListener(
     } else {
       sdriverSubStageStats(info.stageId)(info.attemptId)
     }
+    // subStage的提交时间是在Event之后赋值的
+    stat.startTime = info.submissionTime.get
     stat.endTime = info.completionTime.get
     stat.finished = true
 
@@ -82,7 +87,12 @@ class SiteAppStatisticsListener(
   }
 
   override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
-    val subStageStats = sdriverSubStageStats(taskEnd.stageId)(taskEnd.stageAttemptId)
+    val info = taskEnd.taskInfo
+    val subStageStats = if (info.isFake) {
+      sdriverFakeStageStats(taskEnd.stageId)(taskEnd.stageAttemptId)
+    } else {
+      sdriverSubStageStats(taskEnd.stageId)(taskEnd.stageAttemptId)
+    }
     subStageStats.addTask(taskEnd.taskInfo, taskEnd.taskMetrics)
   }
 

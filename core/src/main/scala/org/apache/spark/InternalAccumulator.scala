@@ -48,10 +48,13 @@ private[spark] object InternalAccumulator {
   // Names of shuffle read metrics
   object shuffleRead {
     val REMOTE_BLOCKS_FETCHED = SHUFFLE_READ_METRICS_PREFIX + "remoteBlocksFetched"
+    val REMOTE_CLUSTER_BLOCKS_FETCHED = SHUFFLE_READ_METRICS_PREFIX + "remoteClusterBlocksFetched"
     val LOCAL_BLOCKS_FETCHED = SHUFFLE_READ_METRICS_PREFIX + "localBlocksFetched"
     val REMOTE_BYTES_READ = SHUFFLE_READ_METRICS_PREFIX + "remoteBytesRead"
+    val REMOTE_CLUSTER_BYTES_READ = SHUFFLE_READ_METRICS_PREFIX + "remoteClusterBytesRead"
     val LOCAL_BYTES_READ = SHUFFLE_READ_METRICS_PREFIX + "localBytesRead"
     val FETCH_WAIT_TIME = SHUFFLE_READ_METRICS_PREFIX + "fetchWaitTime"
+    val LOOP_WAIT_BLOCK_TIME = SHUFFLE_READ_METRICS_PREFIX + "loopWaitBlockTime"
     val RECORDS_READ = SHUFFLE_READ_METRICS_PREFIX + "recordsRead"
   }
 

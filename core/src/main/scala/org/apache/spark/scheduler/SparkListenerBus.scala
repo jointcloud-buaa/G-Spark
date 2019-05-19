@@ -31,8 +31,12 @@ private[spark] trait SparkListenerBus
     event match {
       case stageSubmitted: SparkListenerStageSubmitted =>
         listener.onStageSubmitted(stageSubmitted)
+      case subStageSubmitted: SparkListenerSubStageSubmitted =>
+        listener.onSubStageSubmitted(subStageSubmitted)
       case stageCompleted: SparkListenerStageCompleted =>
         listener.onStageCompleted(stageCompleted)
+      case subStageCompleted: SparkListenerSubStageCompleted =>
+        listener.onSubStageCompleted(subStageCompleted)
       case jobStart: SparkListenerJobStart =>
         listener.onJobStart(jobStart)
       case jobEnd: SparkListenerJobEnd =>
@@ -53,8 +57,12 @@ private[spark] trait SparkListenerBus
         listener.onUnpersistRDD(unpersistRDD)
       case applicationStart: SparkListenerApplicationStart =>
         listener.onApplicationStart(applicationStart)
+      case siteAppStart: SparkListenerSiteAppStart =>
+        listener.onSiteAppStart(siteAppStart)
       case applicationEnd: SparkListenerApplicationEnd =>
         listener.onApplicationEnd(applicationEnd)
+      case siteAppEnd: SparkListenerSiteAppEnd =>
+        listener.onSiteAppEnd(siteAppEnd)
       case metricsUpdate: SparkListenerExecutorMetricsUpdate =>
         listener.onExecutorMetricsUpdate(metricsUpdate)
       case executorAdded: SparkListenerExecutorAdded =>
@@ -63,6 +71,16 @@ private[spark] trait SparkListenerBus
         listener.onExecutorRemoved(executorRemoved)
       case blockUpdated: SparkListenerBlockUpdated =>
         listener.onBlockUpdated(blockUpdated)
+      case taskScheCompleted: SparkListenerTaskScheCompleted =>
+        listener.onTaskScheCompleted(taskScheCompleted)
+      case subStageDataReport: SparkListenerSubStageDataReport =>
+        listener.onSubStageDataReport(subStageDataReport)
+      case remoteShuffleFetchCompleted: SparkListenerRemoteShuffleFetchCompleted =>
+        listener.onRemoteShuffleFetchCompleted(remoteShuffleFetchCompleted)
+      case siteDriverAdded: SparkListenerSiteDriverAdded =>
+        listener.onSiteDriverAdded(siteDriverAdded)
+      case siteDriverRemoved: SparkListenerSiteDriverRemoved =>
+        listener.onSiteDriverRemoved(siteDriverRemoved)
       case logStart: SparkListenerLogStart => // ignore event log metadata
       case _ => listener.onOtherEvent(event)
     }

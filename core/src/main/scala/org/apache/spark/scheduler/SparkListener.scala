@@ -234,6 +234,8 @@ private[spark] trait SparkListenerInterface {
   def onRemoteShuffleFetchCompleted(
     rmtShuffleCompleted: SparkListenerRemoteShuffleFetchCompleted): Unit
 
+  def onTaskScheCompleted(taskScheCompleted: SparkListenerTaskScheCompleted): Unit
+
   /**
    * Called when a task starts
    */
@@ -308,6 +310,10 @@ private[spark] trait SparkListenerInterface {
    */
   def onExecutorRemoved(executorRemoved: SparkListenerExecutorRemoved): Unit
 
+  def onSiteDriverAdded(sdriverAdded: SparkListenerSiteDriverAdded): Unit
+
+  def onSiteDriverRemoved(sdriverRemoved: SparkListenerSiteDriverRemoved): Unit
+
   /**
    * Called when the driver receives a block update info.
    */
@@ -376,7 +382,13 @@ abstract class SparkListener extends SparkListenerInterface {
 
   override def onExecutorRemoved(executorRemoved: SparkListenerExecutorRemoved): Unit = { }
 
+  override def onSiteDriverAdded(sdriverAdded: SparkListenerSiteDriverAdded): Unit = {}
+
+  override def onSiteDriverRemoved(sdriverRemoved: SparkListenerSiteDriverRemoved): Unit = {}
+
   override def onBlockUpdated(blockUpdated: SparkListenerBlockUpdated): Unit = { }
 
   override def onOtherEvent(event: SparkListenerEvent): Unit = { }
+
+  override def onTaskScheCompleted(taskScheCompleted: SparkListenerTaskScheCompleted): Unit = {}
 }

@@ -141,6 +141,21 @@ public class SparkFirehoseListener implements SparkListenerInterface {
     }
 
     @Override
+    public final void onSiteDriverAdded(SparkListenerSiteDriverAdded sdriverAdded) {
+        onEvent(sdriverAdded);
+    }
+
+    @Override
+    public final void onSiteDriverRemoved(SparkListenerSiteDriverRemoved sdriverRemoved) {
+        onEvent(sdriverRemoved);
+    }
+
+    @Override
+    public final void onTaskScheCompleted(SparkListenerTaskScheCompleted taskScheCompleted) {
+        onEvent(taskScheCompleted);
+    }
+
+    @Override
     public void onBlockUpdated(SparkListenerBlockUpdated blockUpdated) {
         onEvent(blockUpdated);
     }

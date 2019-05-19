@@ -130,7 +130,8 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
           logInfo("the sub stage's metrics data is from unknown siteDriver")
         } else {
           val metric = SubStageStats.deserializeToShortReportData(data.value)
-          logInfo(s"received the sub stage(id: ${metric.id}) result from siteDriver($sdriverId)")
+          logInfo(s"received the sub stage(id: ${metric.id}) metric data " +
+            s"from siteDriver($sdriverId)")
           // TODO-lzp
         }
 

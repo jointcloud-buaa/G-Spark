@@ -48,7 +48,6 @@ class ProxyManagedBuffer(
         data.retain()
         realBuf.success(data)
         fetchWaitTime = System.currentTimeMillis() - startTime
-        logInfo(s"fetch local $blockId from ${blockManagerId.hostPort} spent $fetchWaitTime")
       }
       // TODO-lzp: 思考如何增加块获取失败后的重试，和异常处理
       override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {

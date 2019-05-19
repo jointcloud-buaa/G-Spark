@@ -279,6 +279,7 @@ private[spark] object JsonProtocol {
     ("Host" -> taskInfo.host) ~
     ("Locality" -> taskInfo.taskLocality.toString) ~
     ("Speculative" -> taskInfo.speculative) ~
+    ("IsFake" -> taskInfo.isFake) ~
     ("Getting Result Time" -> taskInfo.gettingResultTime) ~
     ("Finish Time" -> taskInfo.finishTime) ~
     ("Failed" -> taskInfo.failed) ~
@@ -709,6 +710,7 @@ private[spark] object JsonProtocol {
     val host = (json \ "Host").extract[String]
     val taskLocality = TaskLocality.withName((json \ "Locality").extract[String])
     val speculative = (json \ "Speculative").extractOpt[Boolean].getOrElse(false)
+    val isFake = (json \ "IsFake").extractOpt[Boolean].getOrElse(false)
     val gettingResultTime = (json \ "Getting Result Time").extract[Long]
     val finishTime = (json \ "Finish Time").extract[Long]
     val failed = (json \ "Failed").extract[Boolean]
@@ -718,8 +720,8 @@ private[spark] object JsonProtocol {
       case None => Seq[AccumulableInfo]()
     }
 
-    val taskInfo =
-      new TaskInfo(taskId, index, attempt, launchTime, executorId, host, taskLocality, speculative)
+    val taskInfo = new TaskInfo(taskId, index, attempt, launchTime,
+      executorId, host, taskLocality, speculative, isFake)
     taskInfo.gettingResultTime = gettingResultTime
     taskInfo.finishTime = finishTime
     taskInfo.failed = failed
