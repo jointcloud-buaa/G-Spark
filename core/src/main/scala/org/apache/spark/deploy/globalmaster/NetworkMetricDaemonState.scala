@@ -14,32 +14,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.spark.deploy.globalmaster
 
-package org.apache.spark.scheduler
+private[deploy] object NetworkMetricDaemonState extends Enumeration {
+  type NetworkMetricDaemonState = Value
 
-private[spark] trait GlobalSchedulerBackend {
+  val RUNNING, EXITED, FAILED, KILLED = Value
 
-  private val appId = "spark-application-" + System.currentTimeMillis()
-
-  def start(): Unit
-
-  def stop(): Unit
-
-  def isReady(): Boolean = true
-
-  def applicationId(): String = appId
-
-  def applicationAttemptId(): Option[String] = None
-
-  def getDriverLogUrls: Option[Map[String, String]] = None
-
-  def launchStages(stages: Seq[StageDescription]): Unit
-
-  def clusterNameToHostName: Map[String, String]
-
-  def hostnameToSDriverId: Map[String, String]
-
-  def defaultParallelism(): Int
-
-  def getNetworkMetricData(): Map[String, Map[String, (Long, Double)]] = Map.empty
+  def isFinished(state: NetworkMetricDaemonState): Boolean =
+    Set(KILLED, FAILED, EXITED).contains(state)
 }

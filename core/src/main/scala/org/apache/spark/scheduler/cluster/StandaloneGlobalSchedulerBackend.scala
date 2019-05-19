@@ -200,6 +200,9 @@ private[spark] class StandaloneGlobalSchedulerBackend(
     (sdriverIds.toSet -- siteDriverReady).isEmpty
   }
 
+  override def getNetworkMetricData(): Map[String, Map[String, (Long, Double)]] =
+    client.getNetworkMetricData()
+
   override def applicationId(): String = Option(appId).getOrElse {
       logWarning("Application ID is not initialized yet.")
       super.applicationId

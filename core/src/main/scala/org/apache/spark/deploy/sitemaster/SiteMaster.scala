@@ -30,7 +30,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.{SecurityManager, SparkConf, SparkException}
 import org.apache.spark.deploy.DeployMessages._
 import org.apache.spark.deploy.ExecutorState
-import org.apache.spark.deploy.globalmaster.{GlobalDriverState, GlobalMaster, SiteDriverState}
+import org.apache.spark.deploy.globalmaster.{GlobalDriverState, GlobalMaster, NetworkMetricDaemonState, SiteDriverState}
 import org.apache.spark.deploy.leaderandrecovery._
 import org.apache.spark.deploy.leaderandrecovery.LeaderMessages.{ElectedLeader, RevokedLeadership}
 import org.apache.spark.deploy.leaderandrecovery.RecoveryMessages.CompleteRecovery
@@ -141,6 +141,8 @@ private[deploy] class SiteMaster(
   val finishedGlobalDrivers = new LinkedHashMap[String, GlobalDriverRunner]
   val siteDrivers = new HashMap[String, SiteDriverRunner]  // fullId
   val finishedSiteDrivers = new LinkedHashMap[String, SiteDriverRunner]
+
+  private var networkMetricDaemon: Option[NetworkMetricRunner] = None
 
   //                               appId  -> executor dir
   val appDirectories = new HashMap[String, Seq[String]]
@@ -328,6 +330,24 @@ private[deploy] class SiteMaster(
           logWarning("Worker state from unknown worker: " + workerId)
       }
 
+    case LaunchNetworkMetricDaemon(gmUrl) =>
+      if (gmUrl != activeGlobalMasterUrl) {
+        logWarning("Invalid Global Master (" + gmUrl + ") attempted to launch NetworkMetricDaemon.")
+      } else if (networkMetricDaemon.isDefined) {
+        logWarning("The network metric daemon has been started.")
+      } else {
+        val metricDir = new File(workDir, "network-metric")
+        if (!metricDir.exists()) {
+          if (!metricDir.mkdirs()) {
+            throw new IOException(s"Failed to create directory $metricDir")
+          }
+        }
+        val manager = new NetworkMetricRunner(siteMasterId,
+          self, metricDir, conf, NetworkMetricDaemonState.RUNNING)
+        manager.start()
+        networkMetricDaemon = Some(manager)
+      }
+
     case LaunchSiteDriver(gmUrl, appId, sdriverId, appDesc, cores_, memory_) =>
       if (gmUrl != activeGlobalMasterUrl) {
         logWarning("Invalid Global Master (" + gmUrl + ") attempted to launch sitedriver.")
@@ -430,6 +450,9 @@ private[deploy] class SiteMaster(
 
     case siteDriverStateChanged @ SiteDriverStateChanged(appId, sdId, state_, msg, exitStatus) =>
       handleSiteDriverStateChanged(siteDriverStateChanged)
+
+    case networkMetricDaemonState: NetworkMetricDaemonStateChanged =>
+      handleNetworkMetricDaemonStateChanged(networkMetricDaemonState)
 
     case globalDriverStateChanged @ GlobalDriverStateChanged(gdId, state_, exception) =>
       handleGlobalDriverStateChanged(globalDriverStateChanged)
@@ -589,6 +612,15 @@ private[deploy] class SiteMaster(
 
     case BoundPortsRequest =>
       context.reply(BoundPortsResponse(port, webUi.boundPort))
+  }
+
+  private def handleNetworkMetricDaemonStateChanged(
+    changed: NetworkMetricDaemonStateChanged): Unit = {
+    sendToGlobalMaster(changed)
+    val state = changed.state
+    if (NetworkMetricDaemonState.isFinished(state)) {
+      networkMetricDaemon = None
+    }
   }
 
   private def handleSiteDriverStateChanged(changed: SiteDriverStateChanged): Unit = {
@@ -1151,6 +1183,7 @@ private[deploy] class SiteMaster(
     registerGlobalMasterThreadPool.shutdownNow()
     globalDrivers.values.foreach(_.kill())
     siteDrivers.values.foreach(_.kill())
+    networkMetricDaemon.foreach(_.kill())
     webUi.stop()
     metricsSystem.stop()
     persistenceEngine.close()

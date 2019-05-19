@@ -40,6 +40,7 @@ private[spark] class SiteMasterInfo(
   @transient var siteDrivers: mutable.HashMap[String, SiteDriverDesc] = _
 
   @transient var state: SiteMasterOutState.Value = _
+  @transient var metricState: NetworkMetricDaemonState.Value = _
   @transient var coresUsed: Int = _
   @transient var memoryUsed: Int = _
 
@@ -105,4 +106,6 @@ private[spark] class SiteMasterInfo(
   def hasSiteDriver(appId: String): Boolean = siteDrivers.contains(appId)
 
   def isAlive(): Boolean = this.state == SiteMasterOutState.ALIVE
+
+  def metricIsAlive: Boolean = this.metricState == NetworkMetricDaemonState.RUNNING
 }

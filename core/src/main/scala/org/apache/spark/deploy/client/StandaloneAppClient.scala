@@ -203,6 +203,18 @@ private[spark] class StandaloneAppClient(
         }
         context.reply(ids)
 
+      case GetNetworkMetricData =>
+        val rsp = askMaster[NetworkMetricDataForAppResponse](GetNetworkMetricDataForApp(appId.get))
+        val data = rsp match {
+          case Some(NetworkMetricDataForAppResponse(_appId, _data)) =>
+            if (appId != _appId) {
+              Map.empty
+            } else _data
+          case None =>
+            Map.empty
+        }
+        context.reply(data)
+
       case StopAppClient =>
         markDead("Application has been stopped.")
         sendToMaster(UnregisterApplication(appId.get))
@@ -341,6 +353,15 @@ private[spark] class StandaloneAppClient(
     } else {
       logWarning("Attempted to request sitemasters urls before driver fully initialized")
       Array.empty[String]
+    }
+  }
+
+  def getNetworkMetricData(): Map[String, Map[String, (Long, Double)]] = {
+    if (endpoint.get != null && appId.get != null) {
+      endpoint.get.askWithRetry[Map[String, Map[String, (Long, Double)]]](GetNetworkMetricData)
+    } else {
+      logWarning("Attempted to request sitemasters urls before driver fully initialized")
+      Map.empty
     }
   }
 }

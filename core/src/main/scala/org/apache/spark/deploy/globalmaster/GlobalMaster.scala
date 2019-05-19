@@ -17,11 +17,14 @@
 
 package org.apache.spark.deploy.globalmaster
 
+import java.io.{BufferedReader, InputStreamReader}
 import java.text.SimpleDateFormat
 import java.util.{Date, Locale}
-import java.util.concurrent.{ScheduledFuture, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, ScheduledFuture, TimeUnit}
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
+import scala.collection.mutable
 import scala.util.Random
 
 import org.apache.spark.{SecurityManager, SparkConf, SparkException}
@@ -34,7 +37,6 @@ import org.apache.spark.deploy.leaderandrecovery._
 import org.apache.spark.deploy.leaderandrecovery.LeaderMessages.{ElectedLeader, RevokedLeadership}
 import org.apache.spark.deploy.leaderandrecovery.RecoveryMessages.CompleteRecovery
 import org.apache.spark.deploy.rest.StandaloneRestServer
-import org.apache.spark.deploy.sitemaster.SiteMaster
 import org.apache.spark.internal.Logging
 import org.apache.spark.metrics.MetricsSystem
 import org.apache.spark.rpc._
@@ -52,6 +54,11 @@ private[deploy] class GlobalMaster(
   private val forwardMessageThread =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("global-master-forward-message-thread")
 
+  // TODO-lzp: 原则上，测量是可以设置为多线程的，比如(1,2,3,4)中，(1,2)的测量是独立于(3,4)的测量的
+  //           当然，最主要的是，怎么的测量是不互相影响? 比如(1,2)与(1,3)是否影响，(1,2)与(2,3)是否影响
+  private val networkMetricThread =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("network-metric-thread")
+
   // TODO-maybedel
   private val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
 
@@ -59,6 +66,15 @@ private[deploy] class GlobalMaster(
   private def createDateFormat = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
 
   private val SITE_MASTER_TIMEOUT_MS = conf.getLong("spark.siteMaster.timeout", 60) * 1000
+  // 想了下，还是默认不启用带宽测量为好
+  private val NETWORK_METRIC_ENABLED = conf.getBoolean("spark.networkMetric.enabled", false)
+  // 当siteMaster节点非常多时，可能间隔应该相对大一点
+  // TODO-lzp: 1，间隔改成与sm节点数相关的值；2，如何避免与远程shuffle块获取的冲突
+  // TODO-lzp: 这里其实是有问题的，带宽测量永远是滞后的，应用在调用带宽数据时，带宽测量的结果可能刚好是应用在远程shuffle时的
+  //           结果，而这个结果因为一个Stage的结束，在此时已经不存在了。
+  private val NETWORK_METRIC_INTERVAL_MS = conf.getLong("spark.networkMetric.interval", 600) * 1000
+  private val NETWORK_METRIC_TOOL = conf.get("spark.networkMetric.tool", "nuttcp")
+  private val NETWORK_METRIC_DURATION_S = conf.getLong("spark.networkMetric.duration", 10)
   private val RETAINED_APPLICATIONS = conf.getInt("spark.deploy.retainedApplications", 200)
   private val RETAINED_GLOBAL_DRIVERS = conf.getInt("spark.deploy.retainedGlobalDrivers", 200)
   private val REAPER_ITERATIONS = conf.getInt("spark.dead.siteMaster.persistence", 15)
@@ -84,6 +100,9 @@ private[deploy] class GlobalMaster(
   // Drivers currently spooled for scheduling
   private val waitingGlobalDrivers = new ArrayBuffer[GlobalDriverInfo]
   private var nextGlobalDriverNumber = 0
+
+  private val latestNetworkMetrics =
+    new ConcurrentHashMap[String, HashMap[String, (Long, Double)]].asScala
 
   Utils.checkHost(address.host, "Expected hostname")
 
@@ -148,6 +167,11 @@ private[deploy] class GlobalMaster(
         self.send(CheckForSiteMasterTimeOut)
       }
     }, 0, SITE_MASTER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    if (NETWORK_METRIC_ENABLED) {
+      networkMetricThread.scheduleAtFixedRate(new Runnable {
+        override def run(): Unit = Utils.tryLogNonFatalError { fetchNetworkMetric() }
+      }, 0, NETWORK_METRIC_INTERVAL_MS, TimeUnit.MILLISECONDS)
+    }
 
     if (restServerEnabled) {
       val port = conf.getInt("spark.globalMaster.rest.port", 6066)
@@ -198,6 +222,7 @@ private[deploy] class GlobalMaster(
       checkForMasterTimeOutTask.cancel(true)
     }
     forwardMessageThread.shutdownNow()
+    networkMetricThread.shutdownNow()
     webUi.stop()
     restServer.foreach(_.stop())
     masterMetricsSystem.stop()
@@ -252,6 +277,15 @@ private[deploy] class GlobalMaster(
         persistenceEngine.addApplication(app)
         driver.send(RegisteredApplication(app.id, self))
         schedule()
+      }
+
+    case NetworkMetricDaemonStateChanged(id, state, msg, exitStatus) =>
+      idToSiteMaster.get(id) match {
+        case Some(info) =>
+          logInfo(s"the $id's network metric state changed to $state")
+          info.metricState = state
+        case None =>
+          logWarning(s"Got metricState changed from unregistered siteMaster $id")
       }
 
       // from SiteMaster
@@ -410,6 +444,10 @@ private[deploy] class GlobalMaster(
         if (registerSiteMaster(smaster)) {
           persistenceEngine.addSiteMaster(smaster)
           context.reply(RegisteredSiteMaster(self, globalMasterWebUiUrl))
+          if (NETWORK_METRIC_ENABLED) {
+            // 注册成功即启动bwctld
+            smRef.send(LaunchNetworkMetricDaemon(globalMasterUrl))
+          }
           schedule()
         } else {
           val masterAddress = smaster.endpoint.address
@@ -518,6 +556,15 @@ private[deploy] class GlobalMaster(
           Array.empty[String]
       }
       context.reply(SiteDriverIdsForAppResponse(appId, sdriverIds))
+
+    case GetNetworkMetricDataForApp(appId: String) =>
+      val data: Map[String, Map[String, (Long, Double)]] = idToApp.get(appId) match {
+        case Some(_) =>
+          latestNetworkMetrics.mapValues(_.toMap).toMap
+        case None =>
+          Map.empty
+      }
+      context.reply(NetworkMetricDataForAppResponse(appId, data))
   }
 
   override def onDisconnected(address: RpcAddress): Unit = {
@@ -561,6 +608,47 @@ private[deploy] class GlobalMaster(
         smaster.endpoint.send(GlobalMasterChanged(self, globalMasterWebUiUrl))
       } catch {
         case e: Exception => logInfo("Site Master " + smaster.id + " had exception on reconnect")
+      }
+    }
+  }
+
+  private def fetchNetworkMetric(): Unit = {
+    val metricMasters = idToSiteMaster.values.filter(_.metricIsAlive).toArray
+    logInfo(s"start network metrics within " + metricMasters.map(_.host).mkString(","))
+    // 注意：这里是测量发送端的
+    val bwPat = ("""nuttcp-t: \d+(?:\.\d+)? MB in \d+(?:\.\d+)? real seconds = """ +
+      """\d+(?:\.\d+)? KB/sec = (\d+(?:\.\d+)?) Mbps""").r
+    val latPat = """nuttcp-t: connect to .* with mss=\d+, RTT=(\d+(?:\.\d+)?) ms""".r
+    metricMasters.foreach { sendM =>
+      if (!latestNetworkMetrics.contains(sendM.host)) {
+        latestNetworkMetrics(sendM.host) = new mutable.HashMap[String, (Long, Double)]()
+      }
+      val sendMetric = latestNetworkMetrics(sendM.host)
+      metricMasters.filter(_.id != sendM.id).foreach { receiveM =>
+        val cmd = s"/usr/bin/bwctl -a 1 -s ${sendM.host} -c ${receiveM.host} " +
+          s"-t $NETWORK_METRIC_DURATION_S -T $NETWORK_METRIC_TOOL"
+        val process = new ProcessBuilder("/bin/bash", "-c", cmd).start()
+        val br = new BufferedReader(new InputStreamReader(process.getInputStream))
+        val errCode = process.waitFor()
+        if (errCode == 0) {
+          var line = br.readLine()
+          var bw: Long = 0
+          var lat: Double = 0
+          while (line != null) {
+            bwPat.findFirstMatchIn(line).foreach(m =>
+              bw = (m.group(1).toDouble * 1024 * 1024 / 8).toLong
+            )
+            latPat.findFirstMatchIn(line).foreach(m => lat = m.group(1).toDouble / 2)
+            line = br.readLine()
+          }
+          sendMetric.synchronized {
+            sendMetric(receiveM.host) = (bw, lat)
+          }
+          logInfo(s"##lizp##: networkMetric ${sendM.host}->${receiveM.host}: ($bw, $lat)")
+        } else {
+          logWarning(s"the network process return non-zero exitCode($errCode)")
+        }
+        br.close()
       }
     }
   }

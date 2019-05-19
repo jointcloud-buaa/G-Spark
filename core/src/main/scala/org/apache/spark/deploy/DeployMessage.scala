@@ -23,6 +23,7 @@ import org.apache.spark.deploy.ExecutorState.ExecutorState
 import org.apache.spark.deploy.globalmaster.{ApplicationInfo, GlobalDriverInfo, SiteMasterInfo}
 import org.apache.spark.deploy.globalmaster.GlobalDriverState.GlobalDriverState
 import org.apache.spark.deploy.globalmaster.GlobalMasterState.GlobalMasterState
+import org.apache.spark.deploy.globalmaster.NetworkMetricDaemonState.NetworkMetricDaemonState
 import org.apache.spark.deploy.globalmaster.SiteDriverState.SiteDriverState
 import org.apache.spark.deploy.sitemaster._
 import org.apache.spark.deploy.sitemaster.SiteMasterInState.SiteMasterInState
@@ -86,6 +87,12 @@ private[deploy] object DeployMessages {
     message: Option[String],
     exitStatus: Option[Int]) extends DeployMessage
 
+  case class NetworkMetricDaemonStateChanged(
+    siteMasterId: String,
+    state: NetworkMetricDaemonState,
+    msg: Option[String],
+    exitStatus: Option[Int]) extends DeployMessage
+
   case class WorkerSchedulerStateResponse(id: String, executors: List[ExecutorDescription])
 
   case class SiteMasterSchedulerStateResponse(
@@ -135,6 +142,8 @@ private[deploy] object DeployMessages {
     cores: Int,
     memory: Int)
     extends DeployMessage
+
+  case class LaunchNetworkMetricDaemon(gmUrl: String) extends DeployMessage
 
   case class LaunchGlobalDriver(driverId: String, driverDesc: GlobalDriverDescription)
     extends DeployMessage
@@ -283,6 +292,13 @@ private[deploy] object DeployMessages {
   case class SiteDriverIdsForAppResponse(appId: String, sdriverIds: Array[String])
 
   case object GetSiteDriverIds
+
+  case class GetNetworkMetricDataForApp(appId: String)
+
+  case class NetworkMetricDataForAppResponse(
+    appId: String, data: Map[String, Map[String, (Long, Double)]])
+
+  case object GetNetworkMetricData
 
   // Master to Worker & AppClient
 

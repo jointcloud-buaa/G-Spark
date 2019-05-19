@@ -1036,6 +1036,7 @@ class DAGScheduler(
 
     // TODO-lzp: 真实的带宽测量
     val bwDist = getBandwitchDist()
+//    val bwDistReal = backend.getNetworkMetricData()
 
     val stageDesc = buildStageDescription(jobId, stage, partitionsToCompute,
       taskIdToDataDist, bwDist, properties)
