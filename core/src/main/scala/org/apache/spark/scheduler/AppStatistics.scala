@@ -32,18 +32,8 @@ sealed trait AppStatData {
 
 case class JobStatData(jobId: Int, stages: Seq[Int]) extends AppStatData
 
-case class StageStatData(stageId: Int, subStageNum: Int) extends AppStatData {
-  private val subStages = Array.ofDim[SubStageReportData](subStageNum)
-  private val fakeStages = Array.ofDim[SubStageReportData](subStageNum)
-
-  def addSubStage(data: SubStageReportData): Unit = {
-    if (data.isFake) {
-      fakeStages(data.idx) = data
-    } else {
-      subStages(data.idx) = data
-    }
-  }
-}
+case class StageStatData(
+  name: String, stageId: Int, subStageNum: Int, stageType: String) extends AppStatData
 
 case class SubStageStatData(
   id: Int, idx: Int, attempt: Int, name: String, taskNum: Int) extends AppStatData {
@@ -55,6 +45,8 @@ case class SubStageStatData(
   var isFake: Boolean = false
 
   var finished: Boolean = false
+
+  private val total = Array.ofDim[Long](tasks.length)
 
   def getAllTasks: Array[TaskStatData] = tasks.map(_.head)
 
@@ -68,7 +60,8 @@ case class SubStageStatData(
 
   def addTask(taskInfo: TaskInfo, taskMetrics: TaskMetrics): Unit = {
     val prevList = tasks(taskInfo.index)
-    tasks(taskInfo.index) = TaskStatData(taskInfo, taskMetrics) :: prevList
+    val taskStat = TaskStatData(taskInfo, taskMetrics)
+    tasks(taskInfo.index) = taskStat :: prevList
     if (prevList == Nil && taskInfo.successful) numFinished += 1
   }
 
@@ -85,6 +78,7 @@ case class SubStageStatData(
     (sum, m, math.sqrt(stat.map(t => (t-m) * (t-m)).sum / stat.length))
   }
 
+  // TODO-lzp: 这里的计算时间有点长
   def taskMetricDataStats: Array[(Long, Double, Double)] = allTaskMetricDatas.map(getStat)
   def allTaskMetricDatas: Array[Array[Long]] = {
     require(numFinished == tasks.length, "the stage's all task is not finished")
@@ -134,12 +128,11 @@ case class SubStageStatData(
 
   def writeToLocalFile(out: BufferedWriter): Unit = {
     require(numFinished == tasks.length, "the stage's all task is not finished")
-    val comment = s"# $name($id,$idx,$attempt): time($startTime,$endTime,$spentTime), " +
-      s"$remoteShuffleStats"
-    val colNames = tasks(0).head.statColNames
+    out.write(s"# SubStage,$name,$id,$idx,$attempt,$spentTime\n")
+    val colNames = TaskStatData.colNames
     out.write(colNames.mkString(",") + "\n")
     tasks.map(_.head).foreach { taskStat =>
-        val colValues = taskStat.statColValues
+        val colValues = taskStat.colValues
         assert(colNames.length == colValues.length,
           "the colNames' length does not equals the values")
         out.write(colValues.mkString(",") + "\n")
@@ -149,11 +142,12 @@ case class SubStageStatData(
   }
 
   def shortReportData: SubStageReportData = SubStageReportData(
-    id, idx, spentTime, isFake, tasks.length, taskMetricDataStats, remoteShuffleStats
+    id, idx, spentTime, isFake, tasks.length
   )
 }
 
 object SubStageStatData {
+
   def serializeToByteBuffer(stat: SubStageStatData): ByteBuffer = {
     val out = new ByteBufferOutputStream()
     val objOut = new ObjectOutputStream(out)
@@ -177,10 +171,22 @@ case class SubStageReportData(
   idx: Int,
   spentTime: Long,
   isFake: Boolean,
-  taskNum: Int,
-  taskMetrics: Array[(Long, Double, Double)],
-  rmtShuffle: Option[RemoteShuffleStat]
-)
+  taskNum: Int
+) {
+  def colValues: Seq[AnyVal] = {
+    Seq(id, idx, spentTime, isFake, taskNum)
+  }
+}
+
+object SubStageReportData {
+  def colNames(hasRmtShuffle: Boolean): Seq[String] = {
+    val s1 = Seq("Id", "Idx", "SpentTime", "IsFake", "TaskNum")
+    val s2 = TaskStatData.colNames.drop(4).flatMap(
+      it => Seq(it + "Total", it + "Mean", it + "STD"))
+    val s3 = if (hasRmtShuffle) RemoteShuffleStat.colNames else Seq.empty
+    s1 ++ s2 ++ s3
+  }
+}
 
 case class RemoteShuffleStat(
   blocksFetched: Long,
@@ -189,7 +195,27 @@ case class RemoteShuffleStat(
   bytesWritten: Long,
   recordsWritten: Long,
   waitTime: Long
-)
+) {
+  def colValues: Seq[AnyVal] = Seq(
+    blocksFetched,
+    bytesFetched,
+    recordsRead,
+    bytesWritten,
+    recordsWritten,
+    waitTime
+  )
+}
+
+object RemoteShuffleStat {
+  def colNames: Seq[String] = Seq(
+    "SRClusterBlocksFetched",
+    "SRClusterBytesFetched",
+    "SRClusterRecordsRead",
+    "SWClusterBytesWritten",
+    "SWClusterRecordsWritten",
+    "FetchClusterWaitTime"
+  )
+}
 
 case class TaskStatData(
   id: Long,
@@ -200,35 +226,7 @@ case class TaskStatData(
 ) extends AppStatData {
   var scheWaitTime: Long = _
 
-  def statColNames: Seq[String] = Seq(
-    "Id",
-    "Index",
-    "Attempt",
-    "IsFinished",
-    "SpentTime",
-    "ScheWaitTime",
-    "SRFetchWaitTime",
-    "SRLoopWaitBlockTime",
-    "SRRecordsRead",
-    "SRLocalBytesRead",
-    "SRLocalBlocksFetched",
-    "SRRemoteBytesRead",
-    "SRRemoteBlocksFetched",
-    "SRRemoteClusterBytesFetched",
-    "SRRemoteClusterBlocksFetched",
-    "SWBytesWritten",
-    "SWRecordsWritten",
-    "InputBytesRead",
-    "InputRecordsRead",
-    "OutputBytesWritten",
-    "OutputRecordsWritten",
-    "MemoryBytesSpilled",
-    "DiskBytesSpilled",
-    "PeakExecutionMemory",
-    "ResultSize"
-  )
-
-  def statColValues: Seq[AnyVal] = {
+  def colValues: Seq[AnyVal] = {
     val sread = metrics.get.shuffleReadMetrics
     val swrite = metrics.get.shuffleWriteMetrics
     val sinput = metrics.get.inputMetrics
@@ -274,4 +272,32 @@ object TaskStatData {
     stat.endTime = taskInfo.finishTime
     stat
   }
+
+  def colNames: Seq[String] = Seq(
+    "Id",
+    "Index",
+    "Attempt",
+    "IsFinished",
+    "SpentTime",
+    "ScheWaitTime",
+    "SRFetchWaitTime",
+    "SRLoopWaitBlockTime",
+    "SRRecordsRead",
+    "SRLocalBytesRead",
+    "SRLocalBlocksFetched",
+    "SRRemoteBytesRead",
+    "SRRemoteBlocksFetched",
+    "SRRemoteClusterBytesFetched",
+    "SRRemoteClusterBlocksFetched",
+    "SWBytesWritten",
+    "SWRecordsWritten",
+    "InputBytesRead",
+    "InputRecordsRead",
+    "OutputBytesWritten",
+    "OutputRecordsWritten",
+    "MemoryBytesSpilled",
+    "DiskBytesSpilled",
+    "PeakExecutionMemory",
+    "ResultSize"
+  )
 }

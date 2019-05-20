@@ -175,6 +175,8 @@ final class ShuffleBlockFetcherIterator(
   private[this] def sendRequest(req: FetchRequest) {
     logDebug("Sending request for %d blocks (%s) from %s".format(
       req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
+    logInfo("Sending request for %d blocks (%s) from %s".format(
+      req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
     bytesInFlight += req.size
     reqsInFlight += 1
 
@@ -195,6 +197,11 @@ final class ShuffleBlockFetcherIterator(
               // This needs to be released after use.
               buf.retain()
               remainingBlocks -= blockId
+              BlockId(blockId) match {
+                case block: RemoteShuffleBlockId =>
+                  logInfo(s"##lizp##: fetch success $block from ${address.hostPort}")
+                case _ =>
+              }
               results.put(new SuccessFetchResult(BlockId(blockId), address, sizeMap(blockId), buf,
                 remainingBlocks.isEmpty))
               logDebug("remainingBlocks: " + remainingBlocks)

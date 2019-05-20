@@ -38,6 +38,7 @@ class StageInfo(
     val details: String,
     val taskMetrics: TaskMetrics = null,
     private[spark] val taskLocalityPreferences: Seq[Seq[TaskLocation]] = Seq.empty,
+  val stageType: String = "unknown",
   val isFake: Boolean = false
 ) {
   /** When this stage was submitted from the DAGScheduler to a TaskScheduler. */
@@ -98,6 +99,7 @@ private[spark] object StageInfo {
       stage.details,
       taskMetrics,
       taskLocalityPreferences,
+      stage.getClass.getSimpleName,
       stage.isInstanceOf[FakeStage]
     )
   }

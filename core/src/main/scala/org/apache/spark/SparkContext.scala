@@ -195,6 +195,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   private var _conf: SparkConf = _
   private var _eventLogDir: Option[URI] = None
   private var _eventLogCodec: Option[String] = None
+  private var _appStatListener: Option[ApplicationStatisticsListener] = None
   private var _env: SparkEnv = _
   private var _jobProgressListener: JobProgressListener = _
   private var _statusTracker: SparkStatusTracker = _
@@ -236,6 +237,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
   def appName: String = _conf.get("spark.app.name")
 
   private[spark] def isEventLogEnabled: Boolean = _conf.getBoolean("spark.eventLog.enabled", false)
+  private[spark] def isAppStatEnabled: Boolean = _conf.getBoolean("spark.appStat.enabled", false)
   private[spark] def eventLogDir: Option[URI] = _eventLogDir
   private[spark] def eventLogCodec: Option[String] = _eventLogCodec
 
@@ -536,6 +538,13 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
       } else {
         None
       }
+
+    _appStatListener = if (isAppStatEnabled) {
+      val statPath = _conf.get("spark.appStat.path", ".")
+      val statListener = new ApplicationStatisticsListener(statPath, _applicationId)
+      listenerBus.addListener(statListener)
+      Some(statListener)
+    } else None
 
     // Optionally scale number of executors dynamically based on workload. Exposed for testing.
     val dynamicAllocationEnabled = Utils.isDynamicAllocationEnabled(_conf)
@@ -1793,6 +1802,7 @@ class SparkContext(config: SparkConf) extends ComponentContext with Logging {
     }
     Utils.tryLogNonFatalError {
       _eventLogger.foreach(_.stop())
+      _appStatListener.foreach(_.stop())
     }
     if (_dagScheduler != null) {
       Utils.tryLogNonFatalError {

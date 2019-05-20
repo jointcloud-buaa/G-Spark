@@ -37,7 +37,7 @@ class SiteAppStatisticsListener(
   private val sdriverSubStageStats: MMap[Int, ArrayBuffer[SubStageStatData]] = MMap.empty
   private val sdriverFakeStageStats: MMap[Int, ArrayBuffer[SubStageStatData]] = MMap.empty
 
-  private val f = Paths.get(statPath, siteAppId, "subStageStats.data").toFile
+  private val f = Paths.get(statPath, siteAppId, "subStageStats.csv").toFile
   if (!f.getParentFile.exists) {
     if (!f.getParentFile.mkdirs) {
       throw new SparkException(s"the dir $statPath does not exists and mkdir failed!")
@@ -52,6 +52,8 @@ class SiteAppStatisticsListener(
 
   override def onSiteAppEnd(siteAppEnd: SparkListenerSiteAppEnd): Unit = {
     endTime = siteAppEnd.time
+
+    statFile.write(s"# SiteApp,$siteAppId,$spentTime\n\n")
   }
 
   override def onSubStageSubmitted(subStageSubmitted: SparkListenerSubStageSubmitted): Unit = {
@@ -84,7 +86,6 @@ class SiteAppStatisticsListener(
     stat.calcScheWaitTime(stat.startTime)
 
     stat.writeToLocalFile(statFile)
-    backend.reportSubStageStats(SubStageStatData.serializeToByteBuffer(stat))
   }
 
   override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {

@@ -628,8 +628,6 @@ private[spark] class SiteContext(
     }
     Utils.tryLogNonFatalError {
       _eventLogger.foreach(_.stop())
-    }
-    Utils.tryLogNonFatalError {
       _siteAppStatListener.foreach(_.stop())
     }
     if (_stageScheduler != null) {

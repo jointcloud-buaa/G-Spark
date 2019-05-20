@@ -132,8 +132,9 @@ class StageScheduler(
   private val messageScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("dag-scheduler-message")
 
-  private val remoteShuffleExecutor =
-    ExecutionContext.fromExecutor(Executors.newFixedThreadPool(8))
+  private val remoteShuffleThreadPool =
+    ThreadUtils.newDaemonFixedThreadPool(8, "remote-shuffle")
+  private val remoteShuffleExecutor = ExecutionContext.fromExecutor(remoteShuffleThreadPool)
 
   private[siteDriver] val eventProcessLoop = new StageSchedulerEventProcessLoop(this)
   taskScheduler.setStageScheduler(this)
@@ -241,6 +242,7 @@ class StageScheduler(
         // 让shuffleDep知道其ShuffleMapStage的处理的分区个数
         sms.shuffleDep.siteMapPartsLen = parts.length
         // 注册shuffleId到serilizerInstance的映射
+        logInfo(s"insert ${sms.shuffleDep.shuffleId}'s instance")
         shuffleIdToShuffleInfo(sms.shuffleDep.shuffleId) =
           (sms.shuffleDep.serializer.newInstance(), sms.shuffleDep.partitioner.numPartitions)
       case _ =>
@@ -282,6 +284,7 @@ class StageScheduler(
     // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
     bmIdToBlockIds.foreach { case (bmId, blocks) =>
       if (blocks.nonEmpty) {
+        logInfo(s"""##lizp##: fetch from ${bmId.hostPort}: ${blocks.mkString(",")}""")
         val startFetchTime = System.currentTimeMillis()
         // 异步拉取，考虑到在方法内部使用了FetcherIterator, 其在迭代时会阻塞
         val f = Future {
@@ -1172,6 +1175,7 @@ class StageScheduler(
   def stop() {
     messageScheduler.shutdownNow()
     eventProcessLoop.stop()
+    remoteShuffleThreadPool.shutdownNow()
     taskScheduler.stop()
   }
 

@@ -257,10 +257,6 @@ class DAGScheduler(
 
   def postStartHook(): Unit = waitBackendReady()
 
-  def postSubStageShortStatsData(statData: SubStageReportData): Unit = {
-    listenerBus.post(SparkListenerSubStageDataReport(statData))
-  }
-
   // 等待schedulerBackend准备好, 通常, 要么已经注册了足够的资源, 要么等待了足够的时间.
   // 这时, taskSchedulerImpl才能进行资源的调度
   private def waitBackendReady(): Unit = {

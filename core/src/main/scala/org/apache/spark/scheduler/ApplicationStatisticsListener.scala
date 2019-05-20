@@ -16,14 +16,31 @@
  */
 package org.apache.spark.scheduler
 
+import java.io.{BufferedWriter, FileWriter}
+import java.nio.file.Paths
+
 import scala.collection.mutable.{Map => MMap}
 
-class ApplicationStatisticsListener extends SparkListener {
+import org.apache.spark.SparkException
+import org.apache.spark.internal.Logging
+
+class ApplicationStatisticsListener(statPath: String, appId: String)
+  extends SparkListener with Logging {
+
   private var startTime: Long = _
   private var endTime: Long = _
   private var appName: String = _
   private var appJobStats: MMap[Int, JobStatData] = MMap.empty
   private var appStageStats: MMap[Int, StageStatData] = MMap.empty
+
+  private val f = Paths.get(statPath, appId, "AppStats.csv").toFile
+  if (!f.getParentFile.exists) {
+    if (!f.getParentFile.mkdirs) {
+      throw new SparkException(s"the dir $statPath does not exists and mkdir failed!")
+    }
+  }
+
+  private val statFile = new BufferedWriter(new FileWriter(f))
 
   override def onApplicationStart(applicationStart: SparkListenerApplicationStart): Unit = {
     startTime = applicationStart.time
@@ -32,6 +49,8 @@ class ApplicationStatisticsListener extends SparkListener {
 
   override def onApplicationEnd(applicationEnd: SparkListenerApplicationEnd): Unit = {
     endTime = applicationEnd.time
+
+    statFile.write(s"# App,$appName,$appId,${endTime-startTime}\n\n")
   }
 
   override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
@@ -43,23 +62,29 @@ class ApplicationStatisticsListener extends SparkListener {
   override def onJobEnd(jobEnd: SparkListenerJobEnd): Unit = {
     val jobStats = appJobStats(jobEnd.jobId)
     jobStats.endTime = jobEnd.time
+
+    statFile.write(
+      s"# Job,${jobStats.jobId},${jobStats.stages.length},${jobStats.spentTime}" + "\n\n")
   }
 
   override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
     val info = stageSubmitted.stageInfo
-    val stageStats = StageStatData(info.stageId, stageSubmitted.subStageNum)
-    stageStats.startTime = info.submissionTime.get
+    val stageStats = StageStatData(
+      info.name, info.stageId, stageSubmitted.subStageNum, info.stageType)
     appStageStats(info.stageId) = stageStats
   }
 
   override def onStageCompleted(stageCompleted: SparkListenerStageCompleted): Unit = {
     val info = stageCompleted.stageInfo
     val stageStats = appStageStats(info.stageId)
+    stageStats.startTime = info.submissionTime.get
     stageStats.endTime = info.completionTime.get
+
+    statFile.write(s"# Stage,${stageStats.name},${stageStats.stageId},${stageStats.stageType}," +
+      s"${stageStats.spentTime}")
   }
 
-  override def onSubStageDataReport(report: SparkListenerSubStageDataReport): Unit = {
-    val data = report.data
-
+  def stop(): Unit = {
+    statFile.close()
   }
 }

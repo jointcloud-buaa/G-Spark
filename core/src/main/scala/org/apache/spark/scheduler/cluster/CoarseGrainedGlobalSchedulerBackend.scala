@@ -125,16 +125,6 @@ private[spark] class CoarseGrainedGlobalSchedulerBackend(
           scheduler.subStageFinished(stageId, stageIdx, results)
         }
 
-      case SubStageDataReport(sdriverId, data) =>
-        if (!siteDriverDataMap.contains(sdriverId)) {
-          logInfo("the sub stage's metrics data is from unknown siteDriver")
-        } else {
-          val metric = SubStageStatData.deserializeToShortReportData(data.value)
-          logInfo(s"received the sub stage(id: ${metric.id}) metric data " +
-            s"from siteDriver($sdriverId)")
-          // TODO-lzp
-        }
-
       case _ =>
         throw new SparkException("not receive anything now")
     }
