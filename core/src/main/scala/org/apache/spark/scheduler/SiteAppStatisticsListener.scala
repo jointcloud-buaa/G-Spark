@@ -34,8 +34,8 @@ class SiteAppStatisticsListener(
 
   def spentTime: Long = endTime - startTime
 
-  private val sdriverSubStageStats: MMap[Int, ArrayBuffer[SubStageStats]] = MMap.empty
-  private val sdriverFakeStageStats: MMap[Int, ArrayBuffer[SubStageStats]] = MMap.empty
+  private val sdriverSubStageStats: MMap[Int, ArrayBuffer[SubStageStatData]] = MMap.empty
+  private val sdriverFakeStageStats: MMap[Int, ArrayBuffer[SubStageStatData]] = MMap.empty
 
   private val f = Paths.get(statPath, siteAppId, "subStageStats.data").toFile
   if (!f.getParentFile.exists) {
@@ -56,7 +56,7 @@ class SiteAppStatisticsListener(
 
   override def onSubStageSubmitted(subStageSubmitted: SparkListenerSubStageSubmitted): Unit = {
     val info = subStageSubmitted.stageInfo
-    val subStageStats = SubStageStats(
+    val subStageStats = SubStageStatData(
       info.stageId, subStageSubmitted.stageIdx, info.attemptId,
       info.name, subStageSubmitted.taskNum
     )
@@ -81,9 +81,10 @@ class SiteAppStatisticsListener(
     stat.startTime = info.submissionTime.get
     stat.endTime = info.completionTime.get
     stat.finished = true
+    stat.calcScheWaitTime(stat.startTime)
 
     stat.writeToLocalFile(statFile)
-    backend.reportSubStageStats(SubStageStats.serializeToByteBuffer(stat))
+    backend.reportSubStageStats(SubStageStatData.serializeToByteBuffer(stat))
   }
 
   override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {

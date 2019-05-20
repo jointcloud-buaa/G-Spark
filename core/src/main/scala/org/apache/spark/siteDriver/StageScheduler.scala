@@ -299,6 +299,7 @@ class StageScheduler(
               stage.id, stage.latestInfo.attemptId, bmId.hostPort, sread, swrite, fetchTime))
           case scala.util.Failure(e) =>
             logError(s"fetch failed! from $bmId with ${blocks.size} blocks")
+            throw e
         }(remoteShuffleExecutor)
       }
     }
@@ -718,6 +719,7 @@ class StageScheduler(
             // outputId用来索引calcPartIds和partResults
             resultStage.addPartResult(rt.outputId, event.result)
             if (resultStage.isSiteAvailable) {
+              markStageAsFinished(resultStage)
               val result = Stage.serializeStageResult(
                 resultStage.id,
                 stageIdToIdx(resultStage.id),

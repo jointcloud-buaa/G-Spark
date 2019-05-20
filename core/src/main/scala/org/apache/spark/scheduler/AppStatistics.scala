@@ -24,15 +24,15 @@ import scala.collection.mutable.{Map => MMap}
 import org.apache.spark.executor.{ShuffleReadMetrics, ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream}
 
-sealed trait Stats {
+sealed trait AppStatData {
   var startTime: Long = _
   var endTime: Long = _
-  def spentTime: Long = endTime - endTime
+  def spentTime: Long = endTime - startTime
 }
 
-case class JobStats(jobId: Int, stages: Seq[Int]) extends Stats
+case class JobStatData(jobId: Int, stages: Seq[Int]) extends AppStatData
 
-case class StageStats(stageId: Int, subStageNum: Int) extends Stats {
+case class StageStatData(stageId: Int, subStageNum: Int) extends AppStatData {
   private val subStages = Array.ofDim[SubStageReportData](subStageNum)
   private val fakeStages = Array.ofDim[SubStageReportData](subStageNum)
 
@@ -45,10 +45,10 @@ case class StageStats(stageId: Int, subStageNum: Int) extends Stats {
   }
 }
 
-case class SubStageStats(
-  id: Int, idx: Int, attempt: Int, name: String, taskNum: Int) extends Stats {
+case class SubStageStatData(
+  id: Int, idx: Int, attempt: Int, name: String, taskNum: Int) extends AppStatData {
 
-  private val tasks = Array.fill[List[TaskStats]](taskNum)(Nil)
+  private val tasks = Array.fill[List[TaskStatData]](taskNum)(Nil)
   private val remoteShuffleMetrics =
     MMap.empty[String, (ShuffleReadMetrics, ShuffleWriteMetrics, Long)]
   private var numFinished: Int = _
@@ -56,7 +56,7 @@ case class SubStageStats(
 
   var finished: Boolean = false
 
-  def getAllTasks: Array[TaskStats] = tasks.map(_.head)
+  def getAllTasks: Array[TaskStatData] = tasks.map(_.head)
 
   def addRemoteShuffleMetrics(
     hostPort: String,
@@ -68,8 +68,12 @@ case class SubStageStats(
 
   def addTask(taskInfo: TaskInfo, taskMetrics: TaskMetrics): Unit = {
     val prevList = tasks(taskInfo.index)
-    tasks(taskInfo.index) = TaskStats(startTime, taskInfo, taskMetrics) :: prevList
+    tasks(taskInfo.index) = TaskStatData(taskInfo, taskMetrics) :: prevList
     if (prevList == Nil && taskInfo.successful) numFinished += 1
+  }
+
+  def calcScheWaitTime(start: Long): Unit = {
+    tasks.map(_.head).foreach(t => t.scheWaitTime = t.startTime - start)
   }
 
   // 获取集合的总和、均值和标准差。需要说明的是，对于特定测量项，不是所有值都有期待的意义。
@@ -140,6 +144,7 @@ case class SubStageStats(
           "the colNames' length does not equals the values")
         out.write(colValues.mkString(",") + "\n")
     }
+    out.write("\n")
     out.flush()
   }
 
@@ -148,8 +153,8 @@ case class SubStageStats(
   )
 }
 
-object SubStageStats {
-  def serializeToByteBuffer(stat: SubStageStats): ByteBuffer = {
+object SubStageStatData {
+  def serializeToByteBuffer(stat: SubStageStatData): ByteBuffer = {
     val out = new ByteBufferOutputStream()
     val objOut = new ObjectOutputStream(out)
     objOut.writeObject(stat.shortReportData)
@@ -186,13 +191,13 @@ case class RemoteShuffleStat(
   waitTime: Long
 )
 
-case class TaskStats(
+case class TaskStatData(
   id: Long,
   idx: Int,
   attempt: Int,
   finished: Boolean,
   metrics: Option[TaskMetrics]
-) extends Stats {
+) extends AppStatData {
   var scheWaitTime: Long = _
 
   def statColNames: Seq[String] = Seq(
@@ -259,15 +264,14 @@ case class TaskStats(
 
 }
 
-object TaskStats {
-  def apply(stageStart: Long, taskInfo: TaskInfo, taskMetrics: TaskMetrics): TaskStats = {
-    val stat = new TaskStats(
+object TaskStatData {
+  def apply(taskInfo: TaskInfo, taskMetrics: TaskMetrics): TaskStatData = {
+    val stat = new TaskStatData(
       taskInfo.taskId, taskInfo.index, taskInfo.attemptNumber, taskInfo.successful,
       Option(taskMetrics)
     )
     stat.startTime = taskInfo.launchTime
     stat.endTime = taskInfo.finishTime
-    stat.scheWaitTime = stat.endTime - stageStart
     stat
   }
 }

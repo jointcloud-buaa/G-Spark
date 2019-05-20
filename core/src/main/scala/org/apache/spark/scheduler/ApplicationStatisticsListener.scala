@@ -22,8 +22,8 @@ class ApplicationStatisticsListener extends SparkListener {
   private var startTime: Long = _
   private var endTime: Long = _
   private var appName: String = _
-  private var appJobStats: MMap[Int, JobStats] = MMap.empty
-  private var appStageStats: MMap[Int, StageStats] = MMap.empty
+  private var appJobStats: MMap[Int, JobStatData] = MMap.empty
+  private var appStageStats: MMap[Int, StageStatData] = MMap.empty
 
   override def onApplicationStart(applicationStart: SparkListenerApplicationStart): Unit = {
     startTime = applicationStart.time
@@ -35,7 +35,7 @@ class ApplicationStatisticsListener extends SparkListener {
   }
 
   override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
-    val jobStats = JobStats(jobStart.jobId, jobStart.stageIds)
+    val jobStats = JobStatData(jobStart.jobId, jobStart.stageIds)
     jobStats.startTime = jobStart.time
     appJobStats(jobStart.jobId) = jobStats
   }
@@ -47,7 +47,7 @@ class ApplicationStatisticsListener extends SparkListener {
 
   override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
     val info = stageSubmitted.stageInfo
-    val stageStats = StageStats(info.stageId, stageSubmitted.subStageNum)
+    val stageStats = StageStatData(info.stageId, stageSubmitted.subStageNum)
     stageStats.startTime = info.submissionTime.get
     appStageStats(info.stageId) = stageStats
   }
