@@ -1105,7 +1105,7 @@ class DAGScheduler(
   // TODO-lzp: 从GM处获取带宽测量数据
   def getBandwitchDist(): NetworkDistState = {
     def mbToB(n: Long): Long = n * 1024 * 1024
-    val idxMap = Array("act-33-36", "act-37-41", "act-42-46")
+    val idxMap = Array("act-32-36", "act-37-41", "act-42-46")
       .zipWithIndex.map { case (c, idx) => (clusterToHost(c), idx) }.toMap
     NetworkDistState.mockWlan(
       idxMap,

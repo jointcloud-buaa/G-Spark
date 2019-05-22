@@ -39,7 +39,7 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rdd.{RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.scheduler.{AccumulableInfo, ActiveJob, ExecutorLossReason, ExecutorSlaveLost, FakeStage, FakeTask, LiveListenerBus, MapStatus, ResultStage, ResultTask, ShuffleMapStage, ShuffleMapTask, SimpleMapStatus, SingleMapStatus, SparkListenerExecutorMetricsUpdate, SparkListenerRemoteShuffleFetchCompleted, SparkListenerSubStageCompleted, SparkListenerSubStageSubmitted, SparkListenerTaskEnd, SparkListenerTaskGettingResult, SparkListenerTaskStart, Stage, StageDescription, Task, TaskInfo, TaskLocation, TaskSet}
-import org.apache.spark.serializer.SerializerInstance
+import org.apache.spark.serializer.{Serializer, SerializerInstance}
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerSiteHeartbeat
 import org.apache.spark.util._
@@ -89,7 +89,7 @@ class StageScheduler(
   private[siteDriver] val failedStages = new HashSet[Stage]
   private[siteDriver] val shuffleIdToMapStage = new HashMap[Int, ShuffleMapStage]
 
-  private[siteDriver] val shuffleIdToShuffleInfo = new HashMap[Int, (SerializerInstance, Int)]()
+  private[siteDriver] val shuffleIdToShuffleInfo = new HashMap[Int, (Serializer, Int)]()
 
   private[siteDriver] val blockManagerIdToTaskContext = new HashMap[BlockManagerId, TaskContext]
 
@@ -133,7 +133,7 @@ class StageScheduler(
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("dag-scheduler-message")
 
   private val remoteShuffleThreadPool =
-    ThreadUtils.newDaemonFixedThreadPool(8, "remote-shuffle")
+    ThreadUtils.newDaemonSingleThreadExecutor("remote-shuffle")
   private val remoteShuffleExecutor = ExecutionContext.fromExecutor(remoteShuffleThreadPool)
 
   private[siteDriver] val eventProcessLoop = new StageSchedulerEventProcessLoop(this)
@@ -208,7 +208,7 @@ class StageScheduler(
     }
   }
 
-  def getShuffleInfo(shuffleId: Int): (SerializerInstance, Int) = shuffleIdToShuffleInfo(shuffleId)
+  def getShuffleInfo(shuffleId: Int): (Serializer, Int) = shuffleIdToShuffleInfo(shuffleId)
 
   def stageSubmitted(stageDesc: StageDescription): Unit = {
     val stageId = stageDesc.stageId
@@ -244,7 +244,7 @@ class StageScheduler(
         // 注册shuffleId到serilizerInstance的映射
         logInfo(s"insert ${sms.shuffleDep.shuffleId}'s instance")
         shuffleIdToShuffleInfo(sms.shuffleDep.shuffleId) =
-          (sms.shuffleDep.serializer.newInstance(), sms.shuffleDep.partitioner.numPartitions)
+          (sms.shuffleDep.serializer, sms.shuffleDep.partitioner.numPartitions)
       case _ =>
     }
 
@@ -281,11 +281,21 @@ class StageScheduler(
       }
     }.toArray.groupBy(_._1).mapValues(_.flatMap(_._2))
 
+    val blocksByAddress = bmIdToBlockIds.filter{ case (bmId, blocks) =>
+      blocks.nonEmpty}.mapValues(_.toSeq).toSeq
+//    remoteShuffleThreadPool.submit(new Runnable {
+//      override def run(): Unit = {
+//        SiteShuffleBlockFetcherUtils.fetchRemoteShuffleBlocks(
+//          conf, TaskContext.empty(), blocksByAddress,
+    //          shuffleIdToShuffleInfo.mapValues(_._1).toMap,
+//          env.blockManager, env.serializerManager, mapOutputTracker
+//        )
+//      }
+//    })
     // 总是将所有需要拉取的块一次性全部发送到bmId，这样方便在bmId那边进行优化。
     bmIdToBlockIds.foreach { case (bmId, blocks) =>
       if (blocks.nonEmpty) {
-        logInfo(s"""##lizp##: fetch from ${bmId.hostPort}: ${blocks.mkString(",")}""")
-        val startFetchTime = System.currentTimeMillis()
+        val startTime = System.currentTimeMillis()
         // 异步拉取，考虑到在方法内部使用了FetcherIterator, 其在迭代时会阻塞
         val f = Future {
           SiteShuffleBlockFetcherUtils.fetchRemoteShuffleBlocks(
@@ -296,10 +306,10 @@ class StageScheduler(
         }(remoteShuffleExecutor)
         f.onComplete{
           case scala.util.Success((sread, swrite)) =>
-            // 从开始远程拉取到全部写入本地的总时间
-            val fetchTime = System.currentTimeMillis() - startFetchTime
-            listenerBus.post(SparkListenerRemoteShuffleFetchCompleted(
-              stage.id, stage.latestInfo.attemptId, bmId.hostPort, sread, swrite, fetchTime))
+            logInfo(s"##lizp##: RemoteShuffleRead: ${sread.remoteClusterBlocksFetched}," +
+              s"${sread.remoteClusterBytesFetched},${sread.fetchWaitTime}," +
+              s"${sread.loopWaitBlockTime};RemoteShuffleWrite: ${swrite.recordsWritten}," +
+              s"${swrite.bytesWritten};SpentTime: ${System.currentTimeMillis() - startTime}")
           case scala.util.Failure(e) =>
             logError(s"fetch failed! from $bmId with ${blocks.size} blocks")
             throw e

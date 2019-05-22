@@ -81,7 +81,7 @@ class ApplicationStatisticsListener(statPath: String, appId: String)
     stageStats.endTime = info.completionTime.get
 
     statFile.write(s"# Stage,${stageStats.name},${stageStats.stageId},${stageStats.stageType}," +
-      s"${stageStats.spentTime}")
+      s"${stageStats.spentTime}\n")
   }
 
   def stop(): Unit = {

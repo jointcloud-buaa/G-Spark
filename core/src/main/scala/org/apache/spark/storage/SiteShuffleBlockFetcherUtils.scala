@@ -18,10 +18,12 @@ package org.apache.spark.storage
 
 import java.io.IOException
 
+import scala.collection.mutable.{Map => MMap}
+
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, MapOutputTrackerMasterRole, SparkConf, SparkEnv, TaskContext, TaskContextImpl}
 import org.apache.spark.executor.{ShuffleReadMetrics, ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.internal.Logging
-import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
+import org.apache.spark.serializer.{Serializer, SerializerInstance, SerializerManager}
 import org.apache.spark.util.{CompletionIterator, Utils}
 
 object SiteShuffleBlockFetcherUtils extends Logging {
@@ -30,7 +32,7 @@ object SiteShuffleBlockFetcherUtils extends Logging {
     conf: SparkConf,
     context: TaskContext,
     blocksByAddress: (BlockManagerId, Seq[(RemoteShuffleBlockId, Long)]),
-    shuffleIdToSerInstances: Map[Int, SerializerInstance],
+    shuffleIdToSerializer: Map[Int, Serializer],
     blockManager: BlockManager = SparkEnv.get.blockManager,
     serializerManager: SerializerManager = SparkEnv.get.serializerManager,
     mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker
@@ -38,6 +40,8 @@ object SiteShuffleBlockFetcherUtils extends Logging {
     val maxBytesInFlight = conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024
     val maxReqsInFlight = conf.getInt("spark.reducer.maxReqsInFlight", Int.MaxValue)
     val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
+
+    val shuffleIdToInstance: MMap[Int, SerializerInstance] = MMap.empty
 
     try {
       // 拉取数据
@@ -54,7 +58,11 @@ object SiteShuffleBlockFetcherUtils extends Logging {
       blockFetcherItr.foreach { case (blockId, inputStream) =>
         val newBlockId = blockId.asInstanceOf[RemoteShuffleBlockId]
         val wrappedStreams = serializerManager.wrapStream(blockId, inputStream)
-        val recordIter = shuffleIdToSerInstances(newBlockId.shuffleId)
+        if (!shuffleIdToInstance.contains(newBlockId.shuffleId)) {
+          shuffleIdToInstance(newBlockId.shuffleId) =
+            shuffleIdToSerializer(newBlockId.shuffleId).newInstance()
+        }
+        val recordIter = shuffleIdToInstance(newBlockId.shuffleId)
           .deserializeStream(wrappedStreams).asKeyValueIterator
         val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
           recordIter.map { record =>
@@ -69,7 +77,7 @@ object SiteShuffleBlockFetcherUtils extends Logging {
         )
         val rst = writeAsBlockFile(
           hostBlockId, interruptibleIter, fileBufferSize, blockManager,
-          shuffleIdToSerInstances(newBlockId.shuffleId), context.taskMetrics()
+          shuffleIdToInstance(newBlockId.shuffleId), context.taskMetrics()
         )
         // 更新结果
         mapOutputTracker.asInstanceOf[MapOutputTrackerMasterRole]
