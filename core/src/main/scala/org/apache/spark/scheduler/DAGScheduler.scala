@@ -197,6 +197,15 @@ class DAGScheduler(
   /** If enabled, FetchFailed will not cause stage retry, in order to surface the problem. */
   private val disallowStageRetryForTest = sc.getConf.getBoolean("spark.test.noStageRetry", false)
 
+  private val realTimeNetworkMetricEnabled = sc.getConf.getBoolean(
+    "spark.realTimeNetworkMetric.enabled", false)
+
+  private val defaultNetworkBandwidth = sc.getConf.getSizeAsBytes(
+    "spark.defaultNetworkBandwidth", "10MB")
+  private val defaultNetworkLatency = sc.getConf.getDouble("spark.defaultNetworkLatency", 0)
+
+  private val allClusterNames = sc.getConf.get("spark.siteMaster.names", "")
+
   private val messageScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("dag-scheduler-message")
 
@@ -1102,16 +1111,24 @@ class DAGScheduler(
     desc
   }
 
-  // TODO-lzp: 从GM处获取带宽测量数据
   def getBandwitchDist(): NetworkDistState = {
-    def mbToB(n: Long): Long = n * 1024 * 1024
-    val idxMap = Array("act-32-36", "act-37-41", "act-42-46")
-      .zipWithIndex.map { case (c, idx) => (clusterToHost(c), idx) }.toMap
-    NetworkDistState.mockWlan(
-      idxMap,
-      Array(mbToB(40), mbToB(20), mbToB(60)),
-      Array(1, 1, 1)
-    )
+    if (realTimeNetworkMetricEnabled) {  // 使用实时的带宽测量结果
+      val data = backend.getNetworkMetricData()
+      NetworkDistState(data)
+    } else {  // 使用设定的带宽
+      val (bws, latencies) = allClusterNames.split(",").map{ cname =>
+        (
+          sc.getConf.getSizeAsBytes(s"spark.$cname.bandwidth", defaultNetworkBandwidth),
+          sc.getConf.getDouble(s"spark.$cname.latency", defaultNetworkLatency)
+        )
+      }.unzip
+      NetworkDistState.mockWlan(
+        allClusterNames.split(",").zipWithIndex.map { case (c, idx) =>
+          (clusterToHost(c), idx) }.toMap,
+        bws,
+        latencies
+      )
+    }
   }
 
   // TODO-lzp: 处理site driver lost
