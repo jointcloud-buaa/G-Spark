@@ -1,104 +1,76 @@
-# Apache Spark
+# G-Spark
 
-Spark is a fast and general cluster computing system for Big Data. It provides
-high-level APIs in Scala, Java, Python, and R, and an optimized engine that
-supports general computation graphs for data analysis. It also supports a
-rich set of higher-level tools including Spark SQL for SQL and DataFrames,
-MLlib for machine learning, GraphX for graph processing,
-and Spark Streaming for stream processing.
+G-Spark是在标准Apache Spark 2.1.4分支4d2d3d47提交的基础上修改实现的一个集群分布式计算框架, 
+目前能够支持原生的多集群部署, 支持处理分布在多个集群的数据. 
 
-<http://spark.apache.org/>
+目前框架只支持基于RDD的运算, 尚不支持标准Spark的其他模块.
 
+## 构建G-Spark
 
-## Online Documentation
+参见[标准Spark构建](http://spark.apache.org/docs/latest/building-spark.html).
 
-You can find the latest Spark documentation, including a programming
-guide, on the [project web page](http://spark.apache.org/documentation.html).
-This README file only contains basic setup instructions.
+推荐使用`build/sbt -Phadoop=2.9`, 在处理多HDFS集群数据时, 依赖于通过`http REST`的方式
+与各个HDFS集群的Namenode交互. 而Hadoop在2.9.x版本之前, 其WebHdfsFileSystem的API实现有缺陷.
 
-## Building Spark
+## 示例
 
-Spark is built using [Apache Maven](http://maven.apache.org/).
-To build Spark and its example programs, run:
+原则上, 除了在HDFS数据读取和写入上与标准Spark不同外, 其余方面G-Spark与标准Spark在程序API上是相同的.
 
-    build/mvn -DskipTests clean package
+以简单的Wordcount为例:
 
-(You do not need to do this if you downloaded a pre-built package.)
+```scala
+import org.apache.hadoop.io.{NullWritable, Text}
+import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat
+import org.apache.spark.{SparkConf, SparkContext}
 
-You can build Spark using more than one thread by using the -T option with Maven, see ["Parallel builds in Maven 3"](https://cwiki.apache.org/confluence/display/MAVEN/Parallel+builds+in+Maven+3).
-More detailed documentation is available from the project site, at
-["Building Spark"](http://spark.apache.org/docs/latest/building-spark.html).
+object MCWordCount {
+  def main(args: Array[String]): Unit = {
+    val statPath = "/storage/bd_workdir/spark/statDir"
+    val conf = new SparkConf().setAppName("MCWordCount")
+    val sc = new SparkContext(conf)
 
-For general development tips, including info on developing Spark using an IDE, see 
-[http://spark.apache.org/developer-tools.html](the Useful Developer Tools page).
+    // 指定数据在每个HDFS集群上的数据路径
+    val paths = Map(
+      "act-32-36" -> s"/user/lizp/HiBench/Wordcount/Input/",
+      "act-37-41" -> s"/user/lizp/HiBench/Wordcount/Input/",
+      "act-42-46" -> s"/user/lizp/HiBench/Wordcount/Input/"
+    )
+    // 新式的多HDFS集群数据的读入API
+    val rdd1 = sc.newMCHadoopFile(
+      paths,
+      classOf[SequenceFileInputFormat[NullWritable, Text]],
+      classOf[NullWritable],
+      classOf[Text]
+    )
+    val words = rdd1.map(_._2.toString).flatMap(_.split("\\s+"))
+    val count = words.map((_, 1)).reduceByKey(_+_)
+    count.collect().foreach(println)
 
-## Interactive Scala Shell
+    sc.stop()
+  }
+}
+```
 
-The easiest way to start using Spark is through the Scala shell:
+## 配置
 
-    ./bin/spark-shell
+最重要的一个配置是各个集群的带宽, 虽然带宽可以选择实时测量或直接设定固定的值, 考虑到带宽测量本身的悖论, 推荐直接
+设定带宽值:
 
-Try the following command, which should return 1000:
+```conf
+spark.siteMaster.names                  act-32-36,act-37-41,act-42-46
+spark.act-32-36.bandwidth               40mb
+spark.act-37-41.bandwidth               20mb
+spark.act-42-46.bandwidth               60mb
+```
 
-    scala> sc.parallelize(1 to 1000).count()
+另一个重要的配置是统计, 你可以选择将应用运行过程中的各个测量量记录到文件中, 比如在SubStage的每个Task花费的时间,
+每个SiteDriver远程Shuffle拉取的数据量等.
 
-## Interactive Python Shell
-
-Alternatively, if you prefer Python, you can use the Python shell:
-
-    ./bin/pyspark
-
-And run the following command, which should also return 1000:
-
-    >>> sc.parallelize(range(1000)).count()
-
-## Example Programs
-
-Spark also comes with several sample programs in the `examples` directory.
-To run one of them, use `./bin/run-example <class> [params]`. For example:
-
-    ./bin/run-example SparkPi
-
-will run the Pi example locally.
-
-You can set the MASTER environment variable when running examples to submit
-examples to a cluster. This can be a mesos:// or spark:// URL,
-"yarn" to run on YARN, and "local" to run
-locally with one thread, or "local[N]" to run locally with N threads. You
-can also use an abbreviated class name if the class is in the `examples`
-package. For instance:
-
-    MASTER=spark://host:7077 ./bin/run-example SparkPi
-
-Many of the example programs print usage help if no params are given.
-
-## Running Tests
-
-Testing first requires [building Spark](#building-spark). Once Spark is built, tests
-can be run using:
-
-    ./dev/run-tests
-
-Please see the guidance on how to
-[run tests for a module, or individual tests](http://spark.apache.org/developer-tools.html#individual-tests).
-
-## A Note About Hadoop Versions
-
-Spark uses the Hadoop core library to talk to HDFS and other Hadoop-supported
-storage systems. Because the protocols have changed in different versions of
-Hadoop, you must build Spark against the same version that your cluster runs.
-
-Please refer to the build documentation at
-["Specifying the Hadoop Version"](http://spark.apache.org/docs/latest/building-spark.html#specifying-the-hadoop-version)
-for detailed guidance on building for a particular distribution of Hadoop, including
-building for particular Hive and Hive Thriftserver distributions.
-
-## Configuration
-
-Please refer to the [Configuration Guide](http://spark.apache.org/docs/latest/configuration.html)
-in the online documentation for an overview on how to configure Spark.
-
-## Contributing
-
-Please review the [Contribution to Spark guide](http://spark.apache.org/contributing.html)
-for information on how to get started contributing to the project.
+```conf
+// 每个集群的统计, 主要包含具体的各个任务的统计量和SubStage相关的统计量
+spark.siteAppStat.enabled               true
+spark.siteAppStat.path                  /storage/bd_workdir/spark/statDir
+// 整个应用的统计, 主要包含Stage和App相关的统计量
+spark.appStat.enabled                   true
+spark.appStat.path                      /storage/bd_workdir/spark/statDir
+```
